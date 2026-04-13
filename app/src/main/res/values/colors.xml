@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="app_background">#F2F2F7</color>
+    <color name="app_surface">#FFFFFF</color>
+    <color name="app_surface_soft">#FBFBFD</color>
+    <color name="app_surface_stroke">#E5E5EA</color>
+    <color name="app_button">#0A84FF</color>
+    <color name="app_button_soft">#EAF3FF</color>
+    <color name="app_button_ripple">#7CC0FF</color>
+    <color name="app_danger">#FF3B30</color>
+    <color name="app_danger_soft">#FFEDED</color>
+    <color name="app_danger_ripple">#FF8A84</color>
+    <color name="text_primary">#111111</color>
+    <color name="text_secondary">#6B7280</color>
+    <color name="separator">#E5E5EA</color>
+</resources>

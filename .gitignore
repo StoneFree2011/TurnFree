@@ -1,0 +1,62 @@
+# Gradle
+.gradle/
+**/build/
+build/
+
+# Android Studio / IntelliJ
+.idea/
+*.iml
+*.ipr
+*.iws
+/.idea/
+
+# Local and machine-specific config
+local.properties
+*.properties.local
+keystore.properties
+
+# Signing and secrets
+*.jks
+*.keystore
+*.p12
+*.pfx
+*.pem
+*.key
+*.pk8
+
+# Native / CMake / NDK
+.cxx/
+.externalNativeBuild/
+captures/
+
+# Logs and crash dumps
+*.log
+*.hprof
+*.tmp
+*.swp
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Android packaging artifacts
+*.apk
+*.aab
+*.ap_
+
+# Misc tooling
+.kotlin/
+out/
+
+# Local agent / Codex tooling
+.agents/
+.codex/
+.codex-cache/
+codex/
+agents/
+skills/
+AGENTS.md
+SKILL.md
+/.codex
+/--skill
+/skills-lock.json
