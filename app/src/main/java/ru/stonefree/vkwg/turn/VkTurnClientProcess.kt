@@ -33,6 +33,8 @@ class VkTurnClientProcess(
             throw IllegalStateException("DTLS-клиент уже запущен")
         }
 
+        onLogLine("vk-turn-proxy package: $VK_TURN_PROXY_PACKAGE")
+
         val executable = resolveExecutable()
         val command = buildCommand(executable, profile)
 
@@ -145,6 +147,7 @@ class VkTurnClientProcess(
 
     companion object {
         private const val TAG = "VkTurnClientProcess"
+        private const val VK_TURN_PROXY_PACKAGE = "github.com/cacggghp/vk-turn-proxy@1.8.3"
         private const val BINARY_NAME = "libvkturn.so"
         private const val DEFAULT_LISTEN = "127.0.0.1:9000"
         private const val ESTABLISHED_MARKER = "Established DTLS connection!"
