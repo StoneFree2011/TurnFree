@@ -19,7 +19,6 @@ class TurnFreePreferences(context: Context) {
             streams = prefs.getInt(KEY_STREAMS, 2).coerceIn(1, 12),
             udp = prefs.getBoolean(KEY_UDP, true),
             noDtls = prefs.getBoolean(KEY_NO_DTLS, false),
-            manualCaptcha = prefs.getBoolean(KEY_MANUAL_CAPTCHA, false),
             hasAmneziaWg = prefs.getBoolean(KEY_HAS_AMNEZIA_WG, false),
             wireGuardConfigText = prefs.getString(KEY_WG_TEXT, "").orEmpty(),
             importLabel = prefs.getString(KEY_IMPORT_LABEL, "").orEmpty(),
@@ -37,7 +36,6 @@ class TurnFreePreferences(context: Context) {
             putInt(KEY_STREAMS, profile.streams.coerceIn(1, 12))
             putBoolean(KEY_UDP, profile.udp)
             putBoolean(KEY_NO_DTLS, profile.noDtls)
-            putBoolean(KEY_MANUAL_CAPTCHA, profile.manualCaptcha)
             putBoolean(KEY_HAS_AMNEZIA_WG, profile.hasAmneziaWg)
             putString(KEY_WG_TEXT, profile.wireGuardConfigText)
             putString(KEY_IMPORT_LABEL, profile.importLabel)
@@ -87,7 +85,6 @@ class TurnFreePreferences(context: Context) {
         const val KEY_STREAMS = "streams"
         const val KEY_UDP = "udp"
         const val KEY_NO_DTLS = "no_dtls"
-        const val KEY_MANUAL_CAPTCHA = "manual_captcha"
         const val KEY_HAS_AMNEZIA_WG = "has_amnezia_wg"
         const val KEY_WG_TEXT = "wg_text"
         const val KEY_IMPORT_LABEL = "import_label"

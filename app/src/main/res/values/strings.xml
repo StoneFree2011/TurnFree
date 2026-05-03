@@ -25,7 +25,7 @@
     <string name="turn_host_override_label">Override TURN Host (-turn)</string>
     <string name="turn_port_override_label">Override TURN Port (-port)</string>
     <string name="no_dtls_label">Raw режим без DTLS (-no-dtls)</string>
-    <string name="manual_captcha_label">Ручная капча (-manual-captcha)</string>
+    <string name="wireguard_config_label">WireGuard-конфиг</string>
     <string name="start_block_title">Запуск</string>
     <string name="launch_button">Подрубить</string>
     <string name="launch_button_connected">Подключено</string>
@@ -60,7 +60,6 @@
     <string name="status_turn_client_exit">DTLS-клиент завершился (код: %1$d)</string>
     <string name="status_turn_established">Established DTLS connection!</string>
     <string name="status_manual_captcha_required">Нужна ручная капча</string>
-    <string name="status_manual_captcha_resolved">Капча решена, продолжаем подключение</string>
     <string name="status_turn_stopping">TURN: остановка сервиса</string>
     <string name="status_turn_already_running">TURN-сервис уже запущен</string>
     <string name="status_turn_missing_fields">TURN не запущен: не заполнены Peer и Turn Link</string>
@@ -115,11 +114,13 @@
     <string name="progress_cause_amnezia">Возможная причина: импортирован Amnezia WG, а сборка поддерживает только классический WireGuard.</string>
     <string name="progress_cause_binary">Возможная причина: DTLS-бинарник отсутствует или несовместим с устройством.</string>
     <string name="progress_cause_network_path">Возможная причина: peer недоступен (refused/unreachable) или блокировка по пути.</string>
-    <string name="progress_cause_captcha">Возможная причина: VK запросил капчу/антибот. Попробуйте новую ссылку звонка, -manual-captcha, -udp или -n 1.</string>
+    <string name="progress_cause_captcha">Возможная причина: VK запросил капчу/антибот. Попробуйте новую ссылку звонка, -udp или -n 1.</string>
     <string name="progress_cause_refresh_permission">Возможная причина: TURN permission refresh не проходит в текущей сети/NAT.</string>
     <string name="manual_captcha_title">Решение капчи</string>
     <string name="manual_captcha_message_with_url">%1$s\n\nОткройте страницу и завершите проверку:\n%2$s</string>
-    <string name="manual_captcha_open">Открыть</string>
-    <string name="manual_captcha_done">Готово</string>
-    <string name="manual_captcha_later">Позже</string>
+    <string name="manual_captcha_later">Закрыть</string>
+    <string name="manual_captcha_open_browser">Открыть в браузере</string>
+    <string name="manual_captcha_loading">Загружаем страницу капчи…</string>
+    <string name="manual_captcha_webview_error">WebView не смог открыть капчу: %1$s</string>
+    <string name="manual_captcha_open_browser_failed">Не удалось открыть браузер: %1$s</string>
 </resources>

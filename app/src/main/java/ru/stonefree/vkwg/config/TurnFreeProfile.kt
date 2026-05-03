@@ -12,7 +12,6 @@ data class TurnFreeProfile(
     val streams: Int = 2,
     val udp: Boolean = true,
     val noDtls: Boolean = false,
-    val manualCaptcha: Boolean = false,
     val hasAmneziaWg: Boolean = false,
     val wireGuardConfigText: String = "",
     val importLabel: String = "",

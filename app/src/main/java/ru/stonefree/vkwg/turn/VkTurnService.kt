@@ -25,7 +25,6 @@ import ru.stonefree.vkwg.MainActivity
 import ru.stonefree.vkwg.R
 import ru.stonefree.vkwg.config.TurnFreeProfile
 import ru.stonefree.vkwg.config.TurnFreePreferences
-import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.min
 
 class VkTurnService : Service() {
@@ -65,14 +64,21 @@ class VkTurnService : Service() {
     @Volatile
     private var lastErrorMessage: String = ""
 
-    private val manualCaptchaReported = AtomicBoolean(false)
-    private val manualCaptchaAwaitingResolution = AtomicBoolean(false)
+    @Volatile
+    private var captchaGeneration = 0L
+
+    @Volatile
+    private var pendingCaptchaUrl: String = ""
+
+    @Volatile
+    private var pendingCaptchaSessionId = 0L
 
     private val servicePreferences by lazy { TurnFreePreferences(applicationContext) }
 
     private var reconnectJob: Job? = null
     private var watchdogJob: Job? = null
     private var healthMonitorJob: Job? = null
+    private var captchaFallbackJob: Job? = null
     private var wakeLock: PowerManager.WakeLock? = null
 
     override fun onCreate() {
@@ -161,6 +167,7 @@ class VkTurnService : Service() {
         stopRequested = true
         cancelReconnectWork()
         cancelHealthMonitor()
+        clearCaptchaFallback()
         serviceScope.launch {
             runCatching { wireGuardController.stop() }
             runCatching { turnClient.stop() }
@@ -318,6 +325,7 @@ class VkTurnService : Service() {
 
     private fun scheduleReconnect(reason: String) {
         if (stopRequested) return
+        clearCaptchaFallback()
 
         if (reconnectAttempt >= MAX_RECONNECT_ATTEMPTS) {
             failWithoutRetry(
@@ -355,10 +363,10 @@ class VkTurnService : Service() {
         }
     }
 
-    private fun scheduleDtlsWatchdog() {
+    private fun scheduleDtlsWatchdog(timeoutMs: Long = DTLS_ESTABLISH_TIMEOUT_MS) {
         cancelWatchdog()
         watchdogJob = serviceScope.launch {
-            delay(DTLS_ESTABLISH_TIMEOUT_MS)
+            delay(timeoutMs)
             if (stopRequested || currentState != TurnFreeServiceState.Establishing) {
                 return@launch
             }
@@ -377,42 +385,47 @@ class VkTurnService : Service() {
 
     private fun onTurnLogLine(line: String) {
         Log.i(TAG, "[vk-turn] $line")
+        val lower = line.lowercase()
         if (
-            line.contains("failed", ignoreCase = true) ||
-            line.contains("error", ignoreCase = true) ||
-            line.contains("panic", ignoreCase = true) ||
-            line.contains("captcha", ignoreCase = true) ||
-            line.contains("challenge", ignoreCase = true) ||
-            line.contains("turnstile", ignoreCase = true) ||
-            line.contains("refresh permissions", ignoreCase = true) ||
-            line.contains("manual captcha", ignoreCase = true) ||
-            line.contains("slider", ignoreCase = true)
+            lower.contains("failed") ||
+            lower.contains("error") ||
+            lower.contains("panic") ||
+            lower.contains("captcha") ||
+            lower.contains("challenge") ||
+            lower.contains("turnstile") ||
+            lower.contains("refresh permissions") ||
+            lower.contains("manual captcha") ||
+            lower.contains("slider")
         ) {
             lastErrorMessage = line
         }
 
-        if (line.contains("Open this URL in your browser:", ignoreCase = true)) {
+        if (lower.contains("captcha_wait_required")) {
+            scheduleCaptchaFallback(triggerNow = false)
+        }
+
+        if (lower.contains("fatal_captcha")) {
+            scheduleCaptchaFallback(triggerNow = true)
+        }
+
+        if (lower.contains("open this url in your browser:")) {
             val url = extractUrl(line)
-            if (!url.isNullOrBlank() && manualCaptchaReported.compareAndSet(false, true)) {
-                manualCaptchaAwaitingResolution.set(true)
-                sendServiceBroadcast(
-                    action = TurnFreeServiceContract.ACTION_MANUAL_CAPTCHA_REQUIRED,
-                    state = currentState,
-                    message = line,
-                    extraUrl = url,
-                )
-                return
+            if (!url.isNullOrBlank()) {
+                scheduleCaptchaFallback(url = url, triggerNow = false)
             }
         }
 
-        if (manualCaptchaAwaitingResolution.get() && !looksLikeCaptchaLine(line)) {
-            if (manualCaptchaAwaitingResolution.compareAndSet(true, false)) {
+        if (looksLikeCaptchaSolved(line)) {
+            if (pendingCaptchaSessionId > 0L) {
                 sendServiceBroadcast(
                     action = TurnFreeServiceContract.ACTION_MANUAL_CAPTCHA_RESOLVED,
                     state = currentState,
                     message = line,
+                    captchaSessionId = pendingCaptchaSessionId,
                 )
             }
+            clearCaptchaFallback()
+            lastErrorMessage = ""
         }
     }
 
@@ -430,6 +443,7 @@ class VkTurnService : Service() {
         if (stopRequested) return
         cancelReconnectWork()
         cancelHealthMonitor()
+        clearCaptchaFallback()
         updateState(TurnFreeServiceState.Failed, message)
     }
 
@@ -437,8 +451,7 @@ class VkTurnService : Service() {
         reconnectAttempt = 0
         reconnectDelayMs = 0L
         lastErrorMessage = ""
-        manualCaptchaReported.set(false)
-        manualCaptchaAwaitingResolution.set(false)
+        clearCaptchaFallback()
         cancelReconnectWork()
     }
 
@@ -446,6 +459,59 @@ class VkTurnService : Service() {
         reconnectJob?.cancel()
         reconnectJob = null
         cancelWatchdog()
+    }
+
+    private fun scheduleCaptchaFallback(url: String = "", triggerNow: Boolean) {
+        if (stopRequested) return
+
+        if (url.isNotBlank()) {
+            pendingCaptchaUrl = url
+            pendingCaptchaSessionId += 1
+        } else if (pendingCaptchaUrl.isBlank()) {
+            return
+        }
+
+        if (currentState == TurnFreeServiceState.Starting ||
+            currentState == TurnFreeServiceState.Establishing ||
+            currentState == TurnFreeServiceState.Reconnecting
+        ) {
+            scheduleDtlsWatchdog(CAPTCHA_DTLS_ESTABLISH_TIMEOUT_MS)
+        }
+
+        val generationAtSchedule = captchaGeneration
+        captchaFallbackJob?.cancel()
+        captchaFallbackJob = serviceScope.launch {
+            if (!triggerNow) {
+                delay(CAPTCHA_AUTO_WAIT_TIMEOUT_MS)
+            }
+            if (stopRequested) return@launch
+            if (generationAtSchedule != captchaGeneration) return@launch
+            if (currentState != TurnFreeServiceState.Starting &&
+                currentState != TurnFreeServiceState.Establishing &&
+                currentState != TurnFreeServiceState.Reconnecting
+            ) {
+                return@launch
+            }
+
+            val captchaUrl = pendingCaptchaUrl
+            if (captchaUrl.isBlank()) return@launch
+
+            sendServiceBroadcast(
+                action = TurnFreeServiceContract.ACTION_MANUAL_CAPTCHA_REQUIRED,
+                state = currentState,
+                message = getString(R.string.status_manual_captcha_required),
+                extraUrl = captchaUrl,
+                captchaSessionId = pendingCaptchaSessionId,
+            )
+        }
+    }
+
+    private fun clearCaptchaFallback() {
+        captchaFallbackJob?.cancel()
+        captchaFallbackJob = null
+        pendingCaptchaUrl = ""
+        pendingCaptchaSessionId = 0L
+        captchaGeneration += 1
     }
 
     private fun scheduleHealthMonitor() {
@@ -488,11 +554,15 @@ class VkTurnService : Service() {
         state: TurnFreeServiceState,
         message: String,
         extraUrl: String? = null,
+        captchaSessionId: Long? = null,
     ) {
         val intent = Intent(action).apply {
             setPackage(packageName)
             putExtra(TurnFreeServiceContract.EXTRA_STATE, state.name)
             putExtra(TurnFreeServiceContract.EXTRA_MESSAGE, message)
+            if (captchaSessionId != null) {
+                putExtra(TurnFreeServiceContract.EXTRA_CAPTCHA_SESSION_ID, captchaSessionId)
+            }
             if (!extraUrl.isNullOrBlank()) {
                 putExtra(TurnFreeServiceContract.EXTRA_URL, extraUrl)
             }
@@ -631,13 +701,16 @@ class VkTurnService : Service() {
         return URL_PATTERN.find(text)?.value?.trimEnd('.', ',', ')')
     }
 
-    private fun looksLikeCaptchaLine(line: String): Boolean {
-        return line.contains("captcha", ignoreCase = true) ||
-            line.contains("challenge", ignoreCase = true) ||
-            line.contains("turnstile", ignoreCase = true) ||
-            line.contains("manual captcha", ignoreCase = true) ||
-            line.contains("slider", ignoreCase = true) ||
-            line.contains("Open this URL in your browser:", ignoreCase = true)
+    private fun looksLikeCaptchaSolved(line: String): Boolean {
+        val lower = line.lowercase()
+        return lower.contains("[vk auth] success") ||
+            lower.contains("[captcha] success") ||
+            lower.contains("captcha solved") ||
+            lower.contains("componentdone status: success") ||
+            lower.contains("slider check status: success") ||
+            lower.contains("auth success") ||
+            lower.contains("success! got success_token") ||
+            lower.contains("established dtls connection")
     }
 
     private fun acquireWakeLock() {
@@ -667,7 +740,9 @@ class VkTurnService : Service() {
         private const val REQUEST_CODE_RETRY = 1103
         private const val MAX_RECONNECT_ATTEMPTS = 5
         private const val DTLS_ESTABLISH_TIMEOUT_MS = 30_000L
+        private const val CAPTCHA_DTLS_ESTABLISH_TIMEOUT_MS = 120_000L
         private const val CONNECTION_HEALTH_CHECK_INTERVAL_MS = 5_000L
+        private const val CAPTCHA_AUTO_WAIT_TIMEOUT_MS = 45_000L
         private val URL_PATTERN = Regex("""https?://\S+""")
 
         private fun computeReconnectDelayMs(attempt: Int): Long {

@@ -45,6 +45,13 @@ class VkTurnClientProcess(
 
         val spawnedProcess = ProcessBuilder(command)
             .redirectErrorStream(true)
+            .apply {
+                environment()["VK_PROFILE_PATH"] = File(
+                    appContext.filesDir,
+                    VK_PROFILE_FILE_NAME,
+                ).absolutePath
+                directory(appContext.filesDir)
+            }
             .start()
 
         process = spawnedProcess
@@ -59,7 +66,7 @@ class VkTurnClientProcess(
                             onLogLine(cleanLine)
                         }
                         if (
-                            cleanLine.contains(ESTABLISHED_MARKER) &&
+                            ESTABLISHED_REGEX.containsMatchIn(cleanLine) &&
                             establishedReported.compareAndSet(false, true)
                         ) {
                             onEstablished()
@@ -115,11 +122,16 @@ class VkTurnClientProcess(
         val turnLink = profile.turn.trim()
         val isYandex = turnLink.contains("yandex", ignoreCase = true) ||
             turnLink.contains("telemost", ignoreCase = true)
+        val peerArgument = TurnFreeDnsResolver.resolvePeerAddress(profile.peer.trim())
+
+        if (peerArgument != profile.peer.trim()) {
+            onLogLine("Resolved peer: ${profile.peer.trim()} -> $peerArgument")
+        }
 
         return buildList {
             add(executable)
             add("-peer")
-            add(profile.peer.trim())
+            add(peerArgument)
             add(if (isYandex) "-yandex-link" else "-vk-link")
             add(turnLink)
             add("-listen")
@@ -142,17 +154,16 @@ class VkTurnClientProcess(
             if (profile.noDtls) {
                 add("-no-dtls")
             }
-            if (profile.manualCaptcha) {
-                add("-manual-captcha")
-            }
         }
     }
 
     companion object {
         private const val TAG = "VkTurnClientProcess"
-        private const val VK_TURN_PROXY_PACKAGE = "github.com/cacggghp/vk-turn-proxy@1.8.3"
+        private const val VK_TURN_PROXY_PACKAGE =
+            "github.com/cacggghp/vk-turn-proxy@7edb014baef8 (embedded from working Android client)"
         private const val BINARY_NAME = "libvkturn.so"
+        private const val VK_PROFILE_FILE_NAME = "vk_profile.json"
         private const val DEFAULT_LISTEN = "127.0.0.1:9000"
-        private const val ESTABLISHED_MARKER = "Established DTLS connection!"
+        private val ESTABLISHED_REGEX = Regex("""(?:\[STREAM \d+\]\s*)?Established DTLS connection!?""")
     }
 }

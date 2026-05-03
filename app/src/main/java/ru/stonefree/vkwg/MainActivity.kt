@@ -1,8 +1,9 @@
 package ru.stonefree.vkwg
 
 import android.Manifest
-import android.app.ActivityManager
 import android.app.Activity
+import android.app.ActivityManager
+import android.app.Dialog
 import android.content.BroadcastReceiver
 import android.content.ClipboardManager
 import android.content.Context
@@ -16,16 +17,29 @@ import android.provider.Settings
 import android.net.VpnService
 import android.os.Bundle
 import android.provider.OpenableColumns
+import android.view.Gravity
+import android.view.View
+import android.view.ViewGroup
 import android.widget.AdapterView
 import android.widget.ArrayAdapter
+import android.widget.FrameLayout
+import android.widget.LinearLayout
+import android.widget.ProgressBar
+import android.widget.TextView
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
-import androidx.appcompat.app.AlertDialog
 import androidx.core.content.ContextCompat
 import androidx.core.content.getSystemService
 import androidx.core.view.isVisible
 import androidx.core.widget.doAfterTextChanged
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
+import com.google.android.material.button.MaterialButton
+import android.webkit.CookieManager
+import android.webkit.WebResourceError
+import android.webkit.WebResourceRequest
+import android.webkit.WebSettings
+import android.webkit.WebView
+import android.webkit.WebViewClient
 import ru.stonefree.vkwg.config.TurnFreeConfigParser
 import ru.stonefree.vkwg.config.TurnFreeImportFormat
 import ru.stonefree.vkwg.config.TurnFreePreferences
@@ -47,7 +61,9 @@ class MainActivity : AppCompatActivity() {
     private var advancedVisible = false
     private var lastStablePhase = ConnectionPhase.Idle
     private var pendingStartAfterPermissionFlow = false
-    private var manualCaptchaDialog: AlertDialog? = null
+    private var manualCaptchaDialog: Dialog? = null
+    private var captchaWebView: WebView? = null
+    private var currentCaptchaSessionId: Long = -1L
 
     private val notificationPermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
@@ -120,15 +136,19 @@ class MainActivity : AppCompatActivity() {
                 TurnFreeServiceContract.ACTION_MANUAL_CAPTCHA_REQUIRED -> {
                     val message = intent.getStringExtra(TurnFreeServiceContract.EXTRA_MESSAGE).orEmpty()
                     val url = intent.getStringExtra(TurnFreeServiceContract.EXTRA_URL).orEmpty()
+                    val sessionId = intent.getLongExtra(TurnFreeServiceContract.EXTRA_CAPTCHA_SESSION_ID, -1L)
                     showManualCaptchaDialog(
                         message = message.ifBlank { getString(R.string.status_manual_captcha_required) },
                         url = url,
+                        sessionId = sessionId,
                     )
                 }
 
                 TurnFreeServiceContract.ACTION_MANUAL_CAPTCHA_RESOLVED -> {
-                    dismissManualCaptchaDialog()
-                    showCaptchaResolvedStatus()
+                    val sessionId = intent.getLongExtra(TurnFreeServiceContract.EXTRA_CAPTCHA_SESSION_ID, -1L)
+                    if (sessionId < 0 || sessionId == currentCaptchaSessionId) {
+                        dismissManualCaptchaDialog()
+                    }
                 }
             }
         }
@@ -212,16 +232,13 @@ class MainActivity : AppCompatActivity() {
         binding.listenInput.doAfterTextChanged { if (!suppressUiEvents) saveUiStateFromInputs() }
         binding.turnHostOverrideInput.doAfterTextChanged { if (!suppressUiEvents) saveUiStateFromInputs() }
         binding.turnPortOverrideInput.doAfterTextChanged { if (!suppressUiEvents) saveUiStateFromInputs() }
+        binding.wireGuardConfigInput.doAfterTextChanged { if (!suppressUiEvents) saveUiStateFromInputs() }
 
         binding.udpSwitch.setOnCheckedChangeListener { _, _ ->
             if (!suppressUiEvents) saveUiStateFromInputs()
         }
 
         binding.noDtlsSwitch.setOnCheckedChangeListener { _, _ ->
-            if (!suppressUiEvents) saveUiStateFromInputs()
-        }
-
-        binding.manualCaptchaSwitch.setOnCheckedChangeListener { _, _ ->
             if (!suppressUiEvents) saveUiStateFromInputs()
         }
 
@@ -305,10 +322,10 @@ class MainActivity : AppCompatActivity() {
         binding.listenInput.setText(profile.listen)
         binding.turnHostOverrideInput.setText(profile.turnHostOverride)
         binding.turnPortOverrideInput.setText(profile.turnPortOverride)
+        binding.wireGuardConfigInput.setText(profile.wireGuardConfigText)
         binding.streamsSpinner.setSelection(profile.streams.coerceIn(1, 12) - 1, false)
         binding.udpSwitch.isChecked = profile.udp
         binding.noDtlsSwitch.isChecked = profile.noDtls
-        binding.manualCaptchaSwitch.isChecked = profile.manualCaptcha
         binding.lastImportValue.text = if (profile.importLabel.isBlank()) {
             getString(R.string.last_import_empty)
         } else {
@@ -326,10 +343,10 @@ class MainActivity : AppCompatActivity() {
             listen = binding.listenInput.text?.toString().orEmpty().trim().ifBlank { DEFAULT_LISTEN },
             turnHostOverride = binding.turnHostOverrideInput.text?.toString().orEmpty().trim(),
             turnPortOverride = binding.turnPortOverrideInput.text?.toString().orEmpty().trim(),
+            wireGuardConfigText = binding.wireGuardConfigInput.text?.toString().orEmpty(),
             streams = (binding.streamsSpinner.selectedItem?.toString()?.toIntOrNull() ?: 2).coerceIn(1, 12),
             udp = binding.udpSwitch.isChecked,
             noDtls = binding.noDtlsSwitch.isChecked,
-            manualCaptcha = binding.manualCaptchaSwitch.isChecked,
         )
         preferences.save(currentProfile)
     }
@@ -474,47 +491,226 @@ class MainActivity : AppCompatActivity() {
         binding.statusText.text = message
     }
 
-    private fun showManualCaptchaDialog(message: String, url: String) {
+    private fun showManualCaptchaDialog(message: String, url: String, sessionId: Long) {
         if (isFinishing || isDestroyed) return
+        if (sessionId >= 0 && currentCaptchaSessionId == sessionId && manualCaptchaDialog?.isShowing == true) {
+            return
+        }
 
         dismissManualCaptchaDialog()
+        currentCaptchaSessionId = sessionId
 
-        manualCaptchaDialog = MaterialAlertDialogBuilder(this)
-            .setTitle(R.string.manual_captcha_title)
-            .setMessage(
-                if (url.isBlank()) {
-                    message
-                } else {
-                    getString(R.string.manual_captcha_message_with_url, message, url)
+        if (url.isNotBlank()) {
+            manualCaptchaDialog = createCaptchaWebDialog(message, url)
+        } else {
+            manualCaptchaDialog = MaterialAlertDialogBuilder(this)
+                .setTitle(R.string.manual_captcha_title)
+                .setMessage(message)
+                .setNegativeButton(R.string.manual_captcha_later, null)
+                .create()
+        }
+
+        manualCaptchaDialog?.setOnDismissListener {
+            clearManualCaptchaDialogState()
+        }
+        manualCaptchaDialog?.show()
+        manualCaptchaDialog?.window?.setLayout(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.MATCH_PARENT,
+        )
+    }
+
+    private fun createCaptchaWebDialog(message: String, url: String): Dialog {
+        val dialog = Dialog(this)
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(getColor(R.color.app_surface))
+            layoutParams = ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT,
+            )
+            setPadding(dp(20), dp(20), dp(20), dp(20))
+        }
+
+        val titleView = TextView(this).apply {
+            text = getString(R.string.manual_captcha_title)
+            setTextColor(getColor(R.color.text_primary))
+            textSize = 20f
+            setTypeface(typeface, android.graphics.Typeface.BOLD)
+        }
+
+        val messageView = TextView(this).apply {
+            text = message
+            setTextColor(getColor(R.color.text_secondary))
+            textSize = 14f
+            setLineSpacing(0f, 1.1f)
+            setPadding(0, dp(8), 0, dp(12))
+        }
+
+        val actionBar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.END
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+            )
+        }
+
+        val openInBrowserButton = MaterialButton(
+            this,
+            null,
+            com.google.android.material.R.attr.materialButtonOutlinedStyle,
+        ).apply {
+            text = getString(R.string.manual_captcha_open_browser)
+            setOnClickListener { openManualCaptchaInBrowser(url) }
+        }
+
+        val closeButton = MaterialButton(this).apply {
+            text = getString(R.string.manual_captcha_later)
+            setOnClickListener { dismissManualCaptchaDialog() }
+        }
+
+        actionBar.addView(openInBrowserButton)
+        actionBar.addView(closeButton)
+
+        val webContainer = FrameLayout(this).apply {
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                0,
+                1f,
+            ).also { params ->
+                params.topMargin = dp(12)
+            }
+        }
+
+        val loadingView = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            setBackgroundColor(getColor(R.color.app_surface))
+            layoutParams = FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT,
+            )
+            addView(ProgressBar(this@MainActivity))
+            addView(
+                TextView(this@MainActivity).apply {
+                    text = getString(R.string.manual_captcha_loading)
+                    setTextColor(getColor(R.color.text_secondary))
+                    textSize = 14f
+                    setPadding(0, dp(12), 0, 0)
                 },
             )
-            .setPositiveButton(R.string.manual_captcha_open) { _, _ ->
-                if (url.isNotBlank()) {
-                    runCatching {
-                        startActivity(
-                            Intent(Intent.ACTION_VIEW, Uri.parse(url)),
+        }
+
+        val webView = WebView(this).apply {
+            layoutParams = FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT,
+            )
+            setBackgroundColor(getColor(android.R.color.white))
+            settings.apply {
+                javaScriptEnabled = true
+                domStorageEnabled = true
+                useWideViewPort = true
+                loadWithOverviewMode = true
+                setSupportZoom(true)
+                builtInZoomControls = true
+                displayZoomControls = false
+                mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+                cacheMode = WebSettings.LOAD_NO_CACHE
+                userAgentString =
+                    "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Mobile Safari/537.36"
+            }
+            CookieManager.getInstance().setAcceptCookie(true)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
+            }
+            webViewClient = object : WebViewClient() {
+                override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
+                    loadingView.isVisible = true
+                }
+
+                override fun onPageFinished(view: WebView?, url: String?) {
+                    loadingView.isVisible = false
+                }
+
+                override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
+                    return false
+                }
+
+                override fun shouldOverrideUrlLoading(view: WebView?, url: String?): Boolean {
+                    return false
+                }
+
+                override fun onReceivedError(
+                    view: WebView?,
+                    request: WebResourceRequest?,
+                    error: WebResourceError?,
+                ) {
+                    if (request?.isForMainFrame == true) {
+                        loadingView.isVisible = false
+                        setStatus(
+                            getString(
+                                R.string.manual_captcha_webview_error,
+                                error?.description?.toString().orEmpty().ifBlank { getString(R.string.status_unknown_error) },
+                            ),
                         )
                     }
                 }
             }
-            .setNeutralButton(R.string.manual_captcha_done) { _, _ ->
-                showCaptchaResolvedStatus()
-            }
-            .setNegativeButton(R.string.manual_captcha_later, null)
-            .create()
+            loadUrl(url)
+        }
 
-        manualCaptchaDialog?.show()
+        captchaWebView = webView
+        webContainer.addView(webView)
+        webContainer.addView(loadingView)
+
+        root.addView(titleView)
+        root.addView(messageView)
+        root.addView(actionBar)
+        root.addView(webContainer)
+
+        dialog.setContentView(root)
+        dialog.setCancelable(true)
+        return dialog
     }
 
-    private fun showCaptchaResolvedStatus() {
-        val message = getString(R.string.status_manual_captcha_resolved)
-        setStatus(message)
-        renderConnectionProgress(currentServiceState, message)
+    private fun openManualCaptchaInBrowser(url: String) {
+        runCatching {
+            startActivity(
+                Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                },
+            )
+        }.onFailure { error ->
+            setStatus(
+                getString(
+                    R.string.manual_captcha_open_browser_failed,
+                    error.message ?: getString(R.string.status_unknown_error),
+                ),
+            )
+        }
     }
 
     private fun dismissManualCaptchaDialog() {
         manualCaptchaDialog?.dismiss()
+        clearManualCaptchaDialogState()
+    }
+
+    private fun clearManualCaptchaDialogState() {
+        captchaWebView?.let { webView ->
+            runCatching { webView.stopLoading() }
+            runCatching { webView.loadUrl("about:blank") }
+            runCatching { webView.removeAllViews() }
+            runCatching { webView.destroy() }
+        }
+        captchaWebView = null
         manualCaptchaDialog = null
+        currentCaptchaSessionId = -1L
+    }
+
+    private fun dp(value: Int): Int {
+        return (value * resources.displayMetrics.density).toInt()
     }
 
     private fun startTurnService() {
@@ -583,7 +779,7 @@ class MainActivity : AppCompatActivity() {
             profile.turnHostOverride.isNotBlank() ||
             profile.turnPortOverride.isNotBlank() ||
             profile.noDtls ||
-            profile.manualCaptcha
+            profile.wireGuardConfigText.isNotBlank()
     }
 
     private fun shouldRequestNotificationPermission(): Boolean {
@@ -644,7 +840,8 @@ class MainActivity : AppCompatActivity() {
                 addAction(TurnFreeServiceContract.ACTION_DTLS_ESTABLISHED)
                 addAction(TurnFreeServiceContract.ACTION_WIREGUARD_START_REQUESTED)
                 addAction(TurnFreeServiceContract.ACTION_MANUAL_CAPTCHA_REQUIRED)
-            },
+                addAction(TurnFreeServiceContract.ACTION_MANUAL_CAPTCHA_RESOLVED)
+                },
             ContextCompat.RECEIVER_NOT_EXPORTED,
         )
             receiverRegistered = true

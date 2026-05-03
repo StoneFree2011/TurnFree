@@ -16,6 +16,7 @@ object TurnFreeServiceContract {
 
     const val EXTRA_STATE = "extra_state"
     const val EXTRA_MESSAGE = "extra_message"
+    const val EXTRA_CAPTCHA_SESSION_ID = "extra_captcha_session_id"
     const val EXTRA_PROFILE_NAME = "extra_profile_name"
     const val EXTRA_URL = "extra_url"
     const val EXTRA_PEER = "extra_peer"
