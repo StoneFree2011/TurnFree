@@ -322,6 +322,15 @@
                             android:text="@string/no_dtls_label"
                             android:textColor="@color/text_primary"
                             android:textSize="14sp" />
+
+                        <com.google.android.material.switchmaterial.SwitchMaterial
+                            android:id="@+id/manualCaptchaSwitch"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="10dp"
+                            android:text="@string/manual_captcha_label"
+                            android:textColor="@color/text_primary"
+                            android:textSize="14sp" />
                     </LinearLayout>
                 </LinearLayout>
             </LinearLayout>

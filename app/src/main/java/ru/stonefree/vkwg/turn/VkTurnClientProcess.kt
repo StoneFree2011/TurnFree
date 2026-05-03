@@ -142,6 +142,9 @@ class VkTurnClientProcess(
             if (profile.noDtls) {
                 add("-no-dtls")
             }
+            if (profile.manualCaptcha) {
+                add("-manual-captcha")
+            }
         }
     }
 

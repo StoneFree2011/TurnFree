@@ -11,10 +11,13 @@ object TurnFreeServiceContract {
     const val ACTION_STATE_CHANGED = "ru.stonefree.vkwg.turn.action.STATE_CHANGED"
     const val ACTION_DTLS_ESTABLISHED = "ru.stonefree.vkwg.turn.action.DTLS_ESTABLISHED"
     const val ACTION_WIREGUARD_START_REQUESTED = "ru.stonefree.vkwg.turn.action.WIREGUARD_START_REQUESTED"
+    const val ACTION_MANUAL_CAPTCHA_REQUIRED = "ru.stonefree.vkwg.turn.action.MANUAL_CAPTCHA_REQUIRED"
+    const val ACTION_MANUAL_CAPTCHA_RESOLVED = "ru.stonefree.vkwg.turn.action.MANUAL_CAPTCHA_RESOLVED"
 
     const val EXTRA_STATE = "extra_state"
     const val EXTRA_MESSAGE = "extra_message"
     const val EXTRA_PROFILE_NAME = "extra_profile_name"
+    const val EXTRA_URL = "extra_url"
     const val EXTRA_PEER = "extra_peer"
     const val EXTRA_TURN = "extra_turn"
     const val EXTRA_LISTEN = "extra_listen"

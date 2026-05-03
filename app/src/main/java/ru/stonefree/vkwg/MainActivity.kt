@@ -20,6 +20,7 @@ import android.widget.AdapterView
 import android.widget.ArrayAdapter
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
+import androidx.appcompat.app.AlertDialog
 import androidx.core.content.ContextCompat
 import androidx.core.content.getSystemService
 import androidx.core.view.isVisible
@@ -46,6 +47,7 @@ class MainActivity : AppCompatActivity() {
     private var advancedVisible = false
     private var lastStablePhase = ConnectionPhase.Idle
     private var pendingStartAfterPermissionFlow = false
+    private var manualCaptchaDialog: AlertDialog? = null
 
     private val notificationPermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
@@ -100,6 +102,7 @@ class MainActivity : AppCompatActivity() {
                 }
 
                 TurnFreeServiceContract.ACTION_DTLS_ESTABLISHED -> {
+                    dismissManualCaptchaDialog()
                     val message = intent.getStringExtra(TurnFreeServiceContract.EXTRA_MESSAGE).orEmpty()
                         .ifBlank { getString(R.string.status_turn_established) }
                     setStatus(message)
@@ -107,10 +110,25 @@ class MainActivity : AppCompatActivity() {
                 }
 
                 TurnFreeServiceContract.ACTION_WIREGUARD_START_REQUESTED -> {
+                    dismissManualCaptchaDialog()
                     val message = intent.getStringExtra(TurnFreeServiceContract.EXTRA_MESSAGE).orEmpty()
                         .ifBlank { getString(R.string.status_wireguard_start_requested) }
                     setStatus(message)
                     renderConnectionProgress(TurnFreeServiceState.WireGuardStarting, message)
+                }
+
+                TurnFreeServiceContract.ACTION_MANUAL_CAPTCHA_REQUIRED -> {
+                    val message = intent.getStringExtra(TurnFreeServiceContract.EXTRA_MESSAGE).orEmpty()
+                    val url = intent.getStringExtra(TurnFreeServiceContract.EXTRA_URL).orEmpty()
+                    showManualCaptchaDialog(
+                        message = message.ifBlank { getString(R.string.status_manual_captcha_required) },
+                        url = url,
+                    )
+                }
+
+                TurnFreeServiceContract.ACTION_MANUAL_CAPTCHA_RESOLVED -> {
+                    dismissManualCaptchaDialog()
+                    showCaptchaResolvedStatus()
                 }
             }
         }
@@ -203,6 +221,10 @@ class MainActivity : AppCompatActivity() {
             if (!suppressUiEvents) saveUiStateFromInputs()
         }
 
+        binding.manualCaptchaSwitch.setOnCheckedChangeListener { _, _ ->
+            if (!suppressUiEvents) saveUiStateFromInputs()
+        }
+
         binding.streamsSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
             override fun onItemSelected(
                 parent: AdapterView<*>?,
@@ -286,6 +308,7 @@ class MainActivity : AppCompatActivity() {
         binding.streamsSpinner.setSelection(profile.streams.coerceIn(1, 12) - 1, false)
         binding.udpSwitch.isChecked = profile.udp
         binding.noDtlsSwitch.isChecked = profile.noDtls
+        binding.manualCaptchaSwitch.isChecked = profile.manualCaptcha
         binding.lastImportValue.text = if (profile.importLabel.isBlank()) {
             getString(R.string.last_import_empty)
         } else {
@@ -306,6 +329,7 @@ class MainActivity : AppCompatActivity() {
             streams = (binding.streamsSpinner.selectedItem?.toString()?.toIntOrNull() ?: 2).coerceIn(1, 12),
             udp = binding.udpSwitch.isChecked,
             noDtls = binding.noDtlsSwitch.isChecked,
+            manualCaptcha = binding.manualCaptchaSwitch.isChecked,
         )
         preferences.save(currentProfile)
     }
@@ -321,15 +345,40 @@ class MainActivity : AppCompatActivity() {
 
     private fun renderLaunchButton(state: TurnFreeServiceState) {
         val isConnected = state == TurnFreeServiceState.WireGuardRunning
-        val isActive = isServiceActive(state)
-        val backgroundColor = if (isConnected) R.color.app_button else R.color.app_danger_soft
-        val strokeColor = if (isConnected) R.color.app_button else R.color.app_danger
-        val textColor = if (isConnected) R.color.app_surface else R.color.app_danger
+        val isConnecting = when (state) {
+            TurnFreeServiceState.Starting,
+            TurnFreeServiceState.Establishing,
+            TurnFreeServiceState.Established,
+            TurnFreeServiceState.WireGuardStarting,
+            TurnFreeServiceState.Reconnecting -> true
 
-        binding.launchButton.text = if (isConnected) {
-            getString(R.string.launch_button_connected)
-        } else {
-            getString(R.string.launch_button)
+            TurnFreeServiceState.Idle,
+            TurnFreeServiceState.Stopping,
+            TurnFreeServiceState.Failed,
+            TurnFreeServiceState.WireGuardRunning -> false
+        }
+        val isActive = isServiceActive(state)
+        val backgroundColor = when {
+            isConnected -> R.color.app_button
+            isConnecting -> R.color.app_button_soft
+            else -> R.color.app_danger_soft
+        }
+        val strokeColor = when {
+            isConnected -> R.color.app_button
+            isConnecting -> R.color.app_button
+            else -> R.color.app_danger
+        }
+        val textColor = when {
+            isConnected -> R.color.app_surface
+            isConnecting -> R.color.app_button
+            else -> R.color.app_danger
+        }
+
+        binding.launchButton.text = when {
+            isConnected -> getString(R.string.launch_button_connected)
+            isConnecting -> getString(R.string.launch_button_connecting)
+            state == TurnFreeServiceState.Failed -> getString(R.string.launch_button_retry)
+            else -> getString(R.string.launch_button)
         }
         binding.launchButton.backgroundTintList = ColorStateList.valueOf(getColor(backgroundColor))
         binding.launchButton.strokeColor = ColorStateList.valueOf(getColor(strokeColor))
@@ -397,6 +446,10 @@ class MainActivity : AppCompatActivity() {
             message.contains("binary") || message.contains("not found") -> getString(R.string.progress_cause_binary)
             message.contains("refused") || message.contains("unreachable") || message.contains("network") -> getString(R.string.progress_cause_network_path)
             message.contains("captcha") -> getString(R.string.progress_cause_captcha)
+            message.contains("challenge") ||
+                message.contains("turnstile") ||
+                message.contains("manual captcha") ||
+                message.contains("slider") -> getString(R.string.progress_cause_captcha)
             message.contains("refresh permission") -> getString(R.string.progress_cause_refresh_permission)
             else -> getString(R.string.progress_cause_default)
         }
@@ -419,6 +472,49 @@ class MainActivity : AppCompatActivity() {
 
     private fun setStatus(message: String) {
         binding.statusText.text = message
+    }
+
+    private fun showManualCaptchaDialog(message: String, url: String) {
+        if (isFinishing || isDestroyed) return
+
+        dismissManualCaptchaDialog()
+
+        manualCaptchaDialog = MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.manual_captcha_title)
+            .setMessage(
+                if (url.isBlank()) {
+                    message
+                } else {
+                    getString(R.string.manual_captcha_message_with_url, message, url)
+                },
+            )
+            .setPositiveButton(R.string.manual_captcha_open) { _, _ ->
+                if (url.isNotBlank()) {
+                    runCatching {
+                        startActivity(
+                            Intent(Intent.ACTION_VIEW, Uri.parse(url)),
+                        )
+                    }
+                }
+            }
+            .setNeutralButton(R.string.manual_captcha_done) { _, _ ->
+                showCaptchaResolvedStatus()
+            }
+            .setNegativeButton(R.string.manual_captcha_later, null)
+            .create()
+
+        manualCaptchaDialog?.show()
+    }
+
+    private fun showCaptchaResolvedStatus() {
+        val message = getString(R.string.status_manual_captcha_resolved)
+        setStatus(message)
+        renderConnectionProgress(currentServiceState, message)
+    }
+
+    private fun dismissManualCaptchaDialog() {
+        manualCaptchaDialog?.dismiss()
+        manualCaptchaDialog = null
     }
 
     private fun startTurnService() {
@@ -486,7 +582,8 @@ class MainActivity : AppCompatActivity() {
             profile.listen.isNotBlank() && profile.listen != DEFAULT_LISTEN ||
             profile.turnHostOverride.isNotBlank() ||
             profile.turnPortOverride.isNotBlank() ||
-            profile.noDtls
+            profile.noDtls ||
+            profile.manualCaptcha
     }
 
     private fun shouldRequestNotificationPermission(): Boolean {
@@ -543,12 +640,13 @@ class MainActivity : AppCompatActivity() {
                 this,
                 turnServiceReceiver,
                 IntentFilter().apply {
-                    addAction(TurnFreeServiceContract.ACTION_STATE_CHANGED)
-                    addAction(TurnFreeServiceContract.ACTION_DTLS_ESTABLISHED)
-                    addAction(TurnFreeServiceContract.ACTION_WIREGUARD_START_REQUESTED)
-                },
-                ContextCompat.RECEIVER_NOT_EXPORTED,
-            )
+                addAction(TurnFreeServiceContract.ACTION_STATE_CHANGED)
+                addAction(TurnFreeServiceContract.ACTION_DTLS_ESTABLISHED)
+                addAction(TurnFreeServiceContract.ACTION_WIREGUARD_START_REQUESTED)
+                addAction(TurnFreeServiceContract.ACTION_MANUAL_CAPTCHA_REQUIRED)
+            },
+            ContextCompat.RECEIVER_NOT_EXPORTED,
+        )
             receiverRegistered = true
         }
     }

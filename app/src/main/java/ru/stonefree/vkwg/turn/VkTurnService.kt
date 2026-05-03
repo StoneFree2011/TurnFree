@@ -25,6 +25,7 @@ import ru.stonefree.vkwg.MainActivity
 import ru.stonefree.vkwg.R
 import ru.stonefree.vkwg.config.TurnFreeProfile
 import ru.stonefree.vkwg.config.TurnFreePreferences
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.min
 
 class VkTurnService : Service() {
@@ -63,6 +64,9 @@ class VkTurnService : Service() {
 
     @Volatile
     private var lastErrorMessage: String = ""
+
+    private val manualCaptchaReported = AtomicBoolean(false)
+    private val manualCaptchaAwaitingResolution = AtomicBoolean(false)
 
     private val servicePreferences by lazy { TurnFreePreferences(applicationContext) }
 
@@ -158,8 +162,8 @@ class VkTurnService : Service() {
         cancelReconnectWork()
         cancelHealthMonitor()
         serviceScope.launch {
-            runCatching { turnClient.stop() }
             runCatching { wireGuardController.stop() }
+            runCatching { turnClient.stop() }
             updateState(TurnFreeServiceState.Stopping, getString(R.string.status_turn_stopping))
             releaseWakeLock()
             stopForeground(STOP_FOREGROUND_REMOVE)
@@ -168,6 +172,7 @@ class VkTurnService : Service() {
     }
 
     fun onDtlsEstablished() {
+        if (stopRequested) return
         cancelWatchdog()
         resetReconnectState()
         Log.i(TAG, "Established DTLS connection!")
@@ -224,6 +229,7 @@ class VkTurnService : Service() {
     }
 
     private suspend fun startWireGuardTunnel() {
+        if (stopRequested) return
         val profileSnapshot = currentProfile
         if (profileSnapshot.hasAmneziaWg) {
             failWithoutRetry(getString(R.string.status_wireguard_amnezia_not_supported))
@@ -243,6 +249,9 @@ class VkTurnService : Service() {
 
         try {
             val tunnelState = wireGuardController.start(profileSnapshot)
+            if (stopRequested) {
+                return
+            }
             if (tunnelState == com.wireguard.android.backend.Tunnel.State.UP) {
                 cancelReconnectWork()
                 resetReconnectState()
@@ -256,6 +265,9 @@ class VkTurnService : Service() {
                 scheduleReconnect(getString(R.string.status_wireguard_failed))
             }
         } catch (error: Exception) {
+            if (stopRequested) {
+                return
+            }
             Log.e(TAG, "WireGuard start failed", error)
             scheduleReconnect(
                 getString(
@@ -267,6 +279,7 @@ class VkTurnService : Service() {
     }
 
     private fun beginTurnSession(initialAttempt: Boolean) {
+        if (stopRequested) return
         if (initialAttempt) {
             updateState(TurnFreeServiceState.Starting, getString(R.string.status_turn_starting))
         } else {
@@ -277,10 +290,12 @@ class VkTurnService : Service() {
         }
 
         serviceScope.launch {
+            if (stopRequested) return@launch
             updateState(TurnFreeServiceState.Establishing, buildEstablishingMessage(currentProfile))
             scheduleDtlsWatchdog()
             runCatching { turnClient.start(profileSnapshot()) }
                 .onFailure { error ->
+                    if (stopRequested) return@onFailure
                     Log.e(TAG, "DTLS client start failed", error)
                     failWithoutRetry(
                         error.message ?: getString(R.string.status_unknown_error),
@@ -295,8 +310,8 @@ class VkTurnService : Service() {
         cancelReconnectWork()
         resetReconnectState()
         serviceScope.launch {
-            runCatching { turnClient.stop() }
             runCatching { wireGuardController.stop() }
+            runCatching { turnClient.stop() }
             beginTurnSession(initialAttempt = true)
         }
     }
@@ -334,8 +349,8 @@ class VkTurnService : Service() {
             }
 
             Log.i(TAG, "Reconnect attempt #$reconnectAttempt after ${reconnectDelayMs}ms")
-            runCatching { turnClient.stop() }
             runCatching { wireGuardController.stop() }
+            runCatching { turnClient.stop() }
             beginTurnSession(initialAttempt = false)
         }
     }
@@ -367,9 +382,37 @@ class VkTurnService : Service() {
             line.contains("error", ignoreCase = true) ||
             line.contains("panic", ignoreCase = true) ||
             line.contains("captcha", ignoreCase = true) ||
-            line.contains("refresh permissions", ignoreCase = true)
+            line.contains("challenge", ignoreCase = true) ||
+            line.contains("turnstile", ignoreCase = true) ||
+            line.contains("refresh permissions", ignoreCase = true) ||
+            line.contains("manual captcha", ignoreCase = true) ||
+            line.contains("slider", ignoreCase = true)
         ) {
             lastErrorMessage = line
+        }
+
+        if (line.contains("Open this URL in your browser:", ignoreCase = true)) {
+            val url = extractUrl(line)
+            if (!url.isNullOrBlank() && manualCaptchaReported.compareAndSet(false, true)) {
+                manualCaptchaAwaitingResolution.set(true)
+                sendServiceBroadcast(
+                    action = TurnFreeServiceContract.ACTION_MANUAL_CAPTCHA_REQUIRED,
+                    state = currentState,
+                    message = line,
+                    extraUrl = url,
+                )
+                return
+            }
+        }
+
+        if (manualCaptchaAwaitingResolution.get() && !looksLikeCaptchaLine(line)) {
+            if (manualCaptchaAwaitingResolution.compareAndSet(true, false)) {
+                sendServiceBroadcast(
+                    action = TurnFreeServiceContract.ACTION_MANUAL_CAPTCHA_RESOLVED,
+                    state = currentState,
+                    message = line,
+                )
+            }
         }
     }
 
@@ -384,6 +427,7 @@ class VkTurnService : Service() {
     }
 
     private fun failWithoutRetry(message: String) {
+        if (stopRequested) return
         cancelReconnectWork()
         cancelHealthMonitor()
         updateState(TurnFreeServiceState.Failed, message)
@@ -393,6 +437,8 @@ class VkTurnService : Service() {
         reconnectAttempt = 0
         reconnectDelayMs = 0L
         lastErrorMessage = ""
+        manualCaptchaReported.set(false)
+        manualCaptchaAwaitingResolution.set(false)
         cancelReconnectWork()
     }
 
@@ -441,11 +487,15 @@ class VkTurnService : Service() {
         action: String,
         state: TurnFreeServiceState,
         message: String,
+        extraUrl: String? = null,
     ) {
         val intent = Intent(action).apply {
             setPackage(packageName)
             putExtra(TurnFreeServiceContract.EXTRA_STATE, state.name)
             putExtra(TurnFreeServiceContract.EXTRA_MESSAGE, message)
+            if (!extraUrl.isNullOrBlank()) {
+                putExtra(TurnFreeServiceContract.EXTRA_URL, extraUrl)
+            }
         }
         sendBroadcast(intent)
     }
@@ -577,6 +627,19 @@ class VkTurnService : Service() {
         return getString(R.string.status_turn_seconds_format, seconds)
     }
 
+    private fun extractUrl(text: String): String? {
+        return URL_PATTERN.find(text)?.value?.trimEnd('.', ',', ')')
+    }
+
+    private fun looksLikeCaptchaLine(line: String): Boolean {
+        return line.contains("captcha", ignoreCase = true) ||
+            line.contains("challenge", ignoreCase = true) ||
+            line.contains("turnstile", ignoreCase = true) ||
+            line.contains("manual captcha", ignoreCase = true) ||
+            line.contains("slider", ignoreCase = true) ||
+            line.contains("Open this URL in your browser:", ignoreCase = true)
+    }
+
     private fun acquireWakeLock() {
         if (wakeLock?.isHeld == true) return
 
@@ -605,6 +668,7 @@ class VkTurnService : Service() {
         private const val MAX_RECONNECT_ATTEMPTS = 5
         private const val DTLS_ESTABLISH_TIMEOUT_MS = 30_000L
         private const val CONNECTION_HEALTH_CHECK_INTERVAL_MS = 5_000L
+        private val URL_PATTERN = Regex("""https?://\S+""")
 
         private fun computeReconnectDelayMs(attempt: Int): Long {
             val base = 2_000L

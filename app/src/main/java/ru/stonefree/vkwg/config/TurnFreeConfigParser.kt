@@ -47,6 +47,7 @@ object TurnFreeConfigParser {
         val streams = optIntFromKeys(json, "n", "streams")?.coerceIn(1, 12) ?: 2
         val udp = optBooleanFromKeys(json, "udp") ?: true
         val noDtls = optBooleanFromKeys(json, "no_dtls", "noDtls") ?: false
+        val manualCaptcha = optBooleanFromKeys(json, "manual_captcha", "manualCaptcha", "manual-captcha") ?: false
         val wireGuardConfigText = json.optString("wg").trim()
         val hasAmneziaWg = containsAmneziaWgDirectives(wireGuardConfigText)
 
@@ -67,6 +68,7 @@ object TurnFreeConfigParser {
                 streams = streams,
                 udp = udp,
                 noDtls = noDtls,
+                manualCaptcha = manualCaptcha,
                 hasAmneziaWg = hasAmneziaWg,
                 wireGuardConfigText = wireGuardConfigText,
             ),
@@ -103,6 +105,7 @@ object TurnFreeConfigParser {
                 streams = extracted.streams,
                 udp = extracted.udp,
                 noDtls = extracted.noDtls,
+                manualCaptcha = extracted.manualCaptcha,
                 hasAmneziaWg = extracted.hasAmneziaWg,
                 wireGuardConfigText = extracted.cleanedWireGuardText,
             ),
@@ -174,6 +177,10 @@ object TurnFreeConfigParser {
             noDtls = collected["no_dtls"]?.toBooleanLoose()
                 ?: collected["nodtls"]?.toBooleanLoose()
                 ?: collected["no-dtls"]?.toBooleanLoose()
+                ?: false,
+            manualCaptcha = collected["manual_captcha"]?.toBooleanLoose()
+                ?: collected["manualcaptcha"]?.toBooleanLoose()
+                ?: collected["manual-captcha"]?.toBooleanLoose()
                 ?: false,
             hasAmneziaWg = containsAmneziaWgDirectives(cleanedLines.joinToString(separator = "\n")),
             cleanedWireGuardText = cleanedLines.joinToString(separator = "\n").trim(),
@@ -333,6 +340,7 @@ object TurnFreeConfigParser {
         val streams: Int,
         val udp: Boolean,
         val noDtls: Boolean,
+        val manualCaptcha: Boolean,
         val hasAmneziaWg: Boolean,
         val cleanedWireGuardText: String,
     )

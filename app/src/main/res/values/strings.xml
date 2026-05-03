@@ -25,9 +25,11 @@
     <string name="turn_host_override_label">Override TURN Host (-turn)</string>
     <string name="turn_port_override_label">Override TURN Port (-port)</string>
     <string name="no_dtls_label">Raw режим без DTLS (-no-dtls)</string>
+    <string name="manual_captcha_label">Ручная капча (-manual-captcha)</string>
     <string name="start_block_title">Запуск</string>
     <string name="launch_button">Подрубить</string>
     <string name="launch_button_connected">Подключено</string>
+    <string name="launch_button_connecting">Подрубаемся</string>
     <string name="launch_button_retry">Повторить</string>
     <string name="status_idle">Статус: готов к импорту конфига</string>
     <string name="status_import_cancelled">Импорт файла отменён</string>
@@ -57,6 +59,8 @@
     <string name="status_turn_binary_missing">DTLS-клиент не найден в APK</string>
     <string name="status_turn_client_exit">DTLS-клиент завершился (код: %1$d)</string>
     <string name="status_turn_established">Established DTLS connection!</string>
+    <string name="status_manual_captcha_required">Нужна ручная капча</string>
+    <string name="status_manual_captcha_resolved">Капча решена, продолжаем подключение</string>
     <string name="status_turn_stopping">TURN: остановка сервиса</string>
     <string name="status_turn_already_running">TURN-сервис уже запущен</string>
     <string name="status_turn_missing_fields">TURN не запущен: не заполнены Peer и Turn Link</string>
@@ -111,6 +115,11 @@
     <string name="progress_cause_amnezia">Возможная причина: импортирован Amnezia WG, а сборка поддерживает только классический WireGuard.</string>
     <string name="progress_cause_binary">Возможная причина: DTLS-бинарник отсутствует или несовместим с устройством.</string>
     <string name="progress_cause_network_path">Возможная причина: peer недоступен (refused/unreachable) или блокировка по пути.</string>
-    <string name="progress_cause_captcha">Возможная причина: VK запросил капчу/антибот. Попробуйте новую ссылку звонка.</string>
+    <string name="progress_cause_captcha">Возможная причина: VK запросил капчу/антибот. Попробуйте новую ссылку звонка, -manual-captcha, -udp или -n 1.</string>
     <string name="progress_cause_refresh_permission">Возможная причина: TURN permission refresh не проходит в текущей сети/NAT.</string>
+    <string name="manual_captcha_title">Решение капчи</string>
+    <string name="manual_captcha_message_with_url">%1$s\n\nОткройте страницу и завершите проверку:\n%2$s</string>
+    <string name="manual_captcha_open">Открыть</string>
+    <string name="manual_captcha_done">Готово</string>
+    <string name="manual_captcha_later">Позже</string>
 </resources>
