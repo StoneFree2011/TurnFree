@@ -14,6 +14,7 @@ import android.os.PowerManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.wireguard.android.backend.Tunnel
+import com.wireguard.config.BadConfigException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -25,6 +26,7 @@ import ru.stonefree.vkwg.MainActivity
 import ru.stonefree.vkwg.R
 import ru.stonefree.vkwg.config.TurnFreeProfile
 import ru.stonefree.vkwg.config.TurnFreePreferences
+import ru.stonefree.vkwg.config.TurnFreeSplitTunnelMode
 import kotlin.math.min
 
 class VkTurnService : Service() {
@@ -74,12 +76,14 @@ class VkTurnService : Service() {
     private var pendingCaptchaSessionId = 0L
 
     private val servicePreferences by lazy { TurnFreePreferences(applicationContext) }
+    private val connectionProgressTracker = TurnFreeConnectionProgressTracker()
 
     private var reconnectJob: Job? = null
     private var watchdogJob: Job? = null
     private var healthMonitorJob: Job? = null
     private var captchaFallbackJob: Job? = null
     private var wakeLock: PowerManager.WakeLock? = null
+    private var lastPublishedProgress = TurnFreeConnectionProgress.idle()
 
     override fun onCreate() {
         super.onCreate()
@@ -104,6 +108,7 @@ class VkTurnService : Service() {
         cancelHealthMonitor()
         releaseWakeLock()
         runCatching { turnClient.stop() }
+        publishProgress(connectionProgressTracker.stopping(), force = true)
         updateState(TurnFreeServiceState.Stopping, getString(R.string.status_service_destroyed))
         serviceScope.cancel()
         notificationManager.cancel(NOTIFICATION_ID)
@@ -127,12 +132,26 @@ class VkTurnService : Service() {
             streams = intent.getIntExtra(TurnFreeServiceContract.EXTRA_STREAMS, 2).coerceIn(1, 12),
             udp = intent.getBooleanExtra(TurnFreeServiceContract.EXTRA_UDP, true),
             noDtls = intent.getBooleanExtra(TurnFreeServiceContract.EXTRA_NO_DTLS, false),
+            alwaysManualCaptcha = intent.getBooleanExtra(
+                TurnFreeServiceContract.EXTRA_ALWAYS_MANUAL_CAPTCHA,
+                false,
+            ),
             hasAmneziaWg = intent.getBooleanExtra(TurnFreeServiceContract.EXTRA_WG_HAS_AMNEZIA, false),
             wireGuardConfigText = intent.getStringExtra(TurnFreeServiceContract.EXTRA_WG_TEXT).orEmpty(),
+            splitTunnelMode = TurnFreeSplitTunnelMode.fromPersisted(
+                intent.getStringExtra(TurnFreeServiceContract.EXTRA_SPLIT_TUNNEL_MODE),
+            ),
+            splitTunnelPackages = intent.getStringArrayListExtra(TurnFreeServiceContract.EXTRA_SPLIT_TUNNEL_PACKAGES)
+                ?.map(String::trim)
+                ?.filter(String::isNotBlank)
+                ?.toSet()
+                .orEmpty(),
         )
+        lastPublishedProgress = connectionProgressTracker.reset(currentProfile.streams)
 
         if (currentProfile.peer.isBlank() || currentProfile.turn.isBlank()) {
             startForegroundServiceInternal()
+            publishProgress(connectionProgressTracker.failed())
             updateState(
                 TurnFreeServiceState.Failed,
                 getString(R.string.status_turn_missing_fields),
@@ -171,6 +190,7 @@ class VkTurnService : Service() {
         serviceScope.launch {
             runCatching { wireGuardController.stop() }
             runCatching { turnClient.stop() }
+            publishProgress(connectionProgressTracker.stopping(), force = true)
             updateState(TurnFreeServiceState.Stopping, getString(R.string.status_turn_stopping))
             releaseWakeLock()
             stopForeground(STOP_FOREGROUND_REMOVE)
@@ -183,16 +203,19 @@ class VkTurnService : Service() {
         cancelWatchdog()
         resetReconnectState()
         Log.i(TAG, "Established DTLS connection!")
+        val progress = connectionProgressTracker.turnReady()
         updateState(TurnFreeServiceState.Established, getString(R.string.status_turn_established))
         sendServiceBroadcast(
             action = TurnFreeServiceContract.ACTION_DTLS_ESTABLISHED,
             state = TurnFreeServiceState.Established,
             message = getString(R.string.status_turn_established),
+            progress = progress,
         )
         serviceScope.launch { startWireGuardTunnel() }
     }
 
     private fun startForegroundServiceInternal() {
+        publishProgress(connectionProgressTracker.serviceStarting())
         val initialNotification = buildNotification(
             title = getString(R.string.notification_title_running),
             text = getString(R.string.status_turn_starting),
@@ -222,6 +245,7 @@ class VkTurnService : Service() {
             action = TurnFreeServiceContract.ACTION_STATE_CHANGED,
             state = state,
             message = message,
+            progress = lastPublishedProgress,
         )
         updateNotification(
             title = when (state) {
@@ -247,11 +271,13 @@ class VkTurnService : Service() {
             return
         }
 
+        val startingProgress = connectionProgressTracker.wireGuardStarting()
         updateState(TurnFreeServiceState.WireGuardStarting, getString(R.string.status_wireguard_starting))
         sendServiceBroadcast(
             action = TurnFreeServiceContract.ACTION_WIREGUARD_START_REQUESTED,
             state = TurnFreeServiceState.WireGuardStarting,
             message = getString(R.string.status_wireguard_starting),
+            progress = startingProgress,
         )
 
         try {
@@ -262,6 +288,7 @@ class VkTurnService : Service() {
             if (tunnelState == com.wireguard.android.backend.Tunnel.State.UP) {
                 cancelReconnectWork()
                 resetReconnectState()
+                publishProgress(connectionProgressTracker.wireGuardConnected(), force = true)
                 updateState(TurnFreeServiceState.WireGuardRunning, getString(R.string.status_wireguard_started))
                 scheduleHealthMonitor()
                 updateNotification(
@@ -276,17 +303,21 @@ class VkTurnService : Service() {
                 return
             }
             Log.e(TAG, "WireGuard start failed", error)
-            scheduleReconnect(
-                getString(
-                    R.string.status_wireguard_failed_with_reason,
-                    error.message ?: getString(R.string.status_unknown_error),
-                ),
+            val message = getString(
+                R.string.status_wireguard_failed_with_reason,
+                error.message ?: getString(R.string.status_unknown_error),
             )
+            if (error is BadConfigException || error is IllegalArgumentException || error is IllegalStateException) {
+                failWithoutRetry(message)
+            } else {
+                scheduleReconnect(message)
+            }
         }
     }
 
     private fun beginTurnSession(initialAttempt: Boolean) {
         if (stopRequested) return
+        publishProgress(connectionProgressTracker.turnStarting(), force = true)
         if (initialAttempt) {
             updateState(TurnFreeServiceState.Starting, getString(R.string.status_turn_starting))
         } else {
@@ -298,9 +329,13 @@ class VkTurnService : Service() {
 
         serviceScope.launch {
             if (stopRequested) return@launch
+            publishProgress(connectionProgressTracker.preparingTurn())
             updateState(TurnFreeServiceState.Establishing, buildEstablishingMessage(currentProfile))
             scheduleDtlsWatchdog()
             runCatching { turnClient.start(profileSnapshot()) }
+                .onSuccess {
+                    publishProgress(connectionProgressTracker.waitingForStreams(), force = true)
+                }
                 .onFailure { error ->
                     if (stopRequested) return@onFailure
                     Log.e(TAG, "DTLS client start failed", error)
@@ -324,7 +359,13 @@ class VkTurnService : Service() {
     }
 
     private fun scheduleReconnect(reason: String) {
-        if (stopRequested) return
+        if (
+            stopRequested ||
+            currentState == TurnFreeServiceState.Failed ||
+            currentState == TurnFreeServiceState.Stopping
+        ) {
+            return
+        }
         clearCaptchaFallback()
 
         if (reconnectAttempt >= MAX_RECONNECT_ATTEMPTS) {
@@ -346,6 +387,10 @@ class VkTurnService : Service() {
             MAX_RECONNECT_ATTEMPTS,
             reason,
             formatDelay(reconnectDelayMs),
+        )
+        publishProgress(
+            connectionProgressTracker.reconnecting(reconnectAttempt, MAX_RECONNECT_ATTEMPTS),
+            force = true,
         )
         updateState(TurnFreeServiceState.Reconnecting, reconnectMessage)
 
@@ -400,18 +445,15 @@ class VkTurnService : Service() {
             lastErrorMessage = line
         }
 
-        if (lower.contains("captcha_wait_required")) {
-            scheduleCaptchaFallback(triggerNow = false)
+        if (isTerminalCaptchaFailure(lower)) {
+            failWithoutRetry(buildCaptchaFailureMessage(lower))
+            return
         }
 
-        if (lower.contains("fatal_captcha")) {
-            scheduleCaptchaFallback(triggerNow = true)
-        }
-
-        if (lower.contains("open this url in your browser:")) {
+        if (isManualCaptchaRequiredSignal(lower)) {
             val url = extractUrl(line)
             if (!url.isNullOrBlank()) {
-                scheduleCaptchaFallback(url = url, triggerNow = false)
+                scheduleCaptchaFallback(url)
             }
         }
 
@@ -427,14 +469,28 @@ class VkTurnService : Service() {
             clearCaptchaFallback()
             lastErrorMessage = ""
         }
+
+        connectionProgressTracker.onLogLine(line)?.let { progress ->
+            publishProgress(progress)
+        }
     }
 
     private fun onTurnClientExited(exitCode: Int?, reason: String) {
-        if (stopRequested) return
+        if (
+            stopRequested ||
+            currentState == TurnFreeServiceState.Failed ||
+            currentState == TurnFreeServiceState.Stopping
+        ) {
+            return
+        }
 
         Log.w(TAG, "DTLS client exited: code=$exitCode reason=$reason")
         val detail = lastErrorMessage.ifBlank {
             reason.ifBlank { getString(R.string.status_turn_client_exit, exitCode ?: -1) }
+        }
+        if (isTerminalCaptchaFailure(detail.lowercase())) {
+            failWithoutRetry(buildCaptchaFailureMessage(detail.lowercase()))
+            return
         }
         scheduleReconnect(detail)
     }
@@ -444,7 +500,13 @@ class VkTurnService : Service() {
         cancelReconnectWork()
         cancelHealthMonitor()
         clearCaptchaFallback()
+        lastErrorMessage = message
+        publishProgress(connectionProgressTracker.failed(), force = true)
         updateState(TurnFreeServiceState.Failed, message)
+        serviceScope.launch {
+            runCatching { wireGuardController.stop() }
+            runCatching { turnClient.stop() }
+        }
     }
 
     private fun resetReconnectState() {
@@ -461,7 +523,7 @@ class VkTurnService : Service() {
         cancelWatchdog()
     }
 
-    private fun scheduleCaptchaFallback(url: String = "", triggerNow: Boolean) {
+    private fun scheduleCaptchaFallback(url: String = "") {
         if (stopRequested) return
 
         if (url.isNotBlank()) {
@@ -481,9 +543,6 @@ class VkTurnService : Service() {
         val generationAtSchedule = captchaGeneration
         captchaFallbackJob?.cancel()
         captchaFallbackJob = serviceScope.launch {
-            if (!triggerNow) {
-                delay(CAPTCHA_AUTO_WAIT_TIMEOUT_MS)
-            }
             if (stopRequested) return@launch
             if (generationAtSchedule != captchaGeneration) return@launch
             if (currentState != TurnFreeServiceState.Starting &&
@@ -496,12 +555,14 @@ class VkTurnService : Service() {
             val captchaUrl = pendingCaptchaUrl
             if (captchaUrl.isBlank()) return@launch
 
+            val progress = connectionProgressTracker.manualCaptchaRequired()
             sendServiceBroadcast(
                 action = TurnFreeServiceContract.ACTION_MANUAL_CAPTCHA_REQUIRED,
                 state = currentState,
                 message = getString(R.string.status_manual_captcha_required),
                 extraUrl = captchaUrl,
                 captchaSessionId = pendingCaptchaSessionId,
+                progress = progress,
             )
         }
     }
@@ -555,6 +616,7 @@ class VkTurnService : Service() {
         message: String,
         extraUrl: String? = null,
         captchaSessionId: Long? = null,
+        progress: TurnFreeConnectionProgress? = null,
     ) {
         val intent = Intent(action).apply {
             setPackage(packageName)
@@ -566,8 +628,24 @@ class VkTurnService : Service() {
             if (!extraUrl.isNullOrBlank()) {
                 putExtra(TurnFreeServiceContract.EXTRA_URL, extraUrl)
             }
+            if (progress != null) {
+                TurnFreeServiceContract.run { putProgress(progress) }
+            }
         }
         sendBroadcast(intent)
+    }
+
+    private fun publishProgress(progress: TurnFreeConnectionProgress, force: Boolean = false) {
+        if (!force && progress == lastPublishedProgress) {
+            return
+        }
+        lastPublishedProgress = progress
+        sendServiceBroadcast(
+            action = TurnFreeServiceContract.ACTION_PROGRESS_CHANGED,
+            state = currentState,
+            message = "",
+            progress = progress,
+        )
     }
 
     private fun updateNotification(title: String, text: String) {
@@ -701,12 +779,36 @@ class VkTurnService : Service() {
         return URL_PATTERN.find(text)?.value?.trimEnd('.', ',', ')')
     }
 
+    private fun isManualCaptchaRequiredSignal(lower: String): Boolean {
+        return lower.contains("action required: manual captcha solving needed") ||
+            lower.contains("open this url in your browser:")
+    }
+
+    private fun isTerminalCaptchaFailure(lower: String): Boolean {
+        return lower.contains("manual captcha timed out") ||
+            lower.contains("manual captcha returned empty result") ||
+            lower.contains("manual captcha interrupted") ||
+            lower.contains("no more solve modes available") ||
+            lower.contains("fatal_captcha") ||
+            lower.contains("fatal captcha") ||
+            lower.contains("captcha_wait_required")
+    }
+
+    private fun buildCaptchaFailureMessage(lower: String): String {
+        return when {
+            lower.contains("manual captcha timed out") -> getString(R.string.status_captcha_failed_timeout)
+            lower.contains("manual captcha returned empty result") ||
+                lower.contains("manual captcha interrupted") -> getString(R.string.status_captcha_failed_retry)
+            lower.contains("global lockout active") -> getString(R.string.status_captcha_failed_lockout)
+            else -> getString(R.string.status_captcha_failed_retry)
+        }
+    }
+
     private fun looksLikeCaptchaSolved(line: String): Boolean {
         val lower = line.lowercase()
         return lower.contains("[vk auth] success") ||
             lower.contains("[captcha] success") ||
             lower.contains("captcha solved") ||
-            lower.contains("componentdone status: success") ||
             lower.contains("slider check status: success") ||
             lower.contains("auth success") ||
             lower.contains("success! got success_token") ||
@@ -742,7 +844,6 @@ class VkTurnService : Service() {
         private const val DTLS_ESTABLISH_TIMEOUT_MS = 30_000L
         private const val CAPTCHA_DTLS_ESTABLISH_TIMEOUT_MS = 120_000L
         private const val CONNECTION_HEALTH_CHECK_INTERVAL_MS = 5_000L
-        private const val CAPTCHA_AUTO_WAIT_TIMEOUT_MS = 45_000L
         private val URL_PATTERN = Regex("""https?://\S+""")
 
         private fun computeReconnectDelayMs(attempt: Int): Long {

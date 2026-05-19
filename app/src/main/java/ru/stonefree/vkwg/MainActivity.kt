@@ -41,10 +41,14 @@ import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import ru.stonefree.vkwg.config.TurnFreeConfigParser
+import ru.stonefree.vkwg.config.TurnFreeAppInventory
 import ru.stonefree.vkwg.config.TurnFreeImportFormat
 import ru.stonefree.vkwg.config.TurnFreePreferences
 import ru.stonefree.vkwg.config.TurnFreeProfile
+import ru.stonefree.vkwg.config.TurnFreeSplitTunnelMode
 import ru.stonefree.vkwg.databinding.ActivityMainBinding
+import ru.stonefree.vkwg.databinding.DialogSplitTunnelAppsBinding
+import ru.stonefree.vkwg.turn.TurnFreeConnectionProgress
 import ru.stonefree.vkwg.turn.TurnFreeServiceContract
 import ru.stonefree.vkwg.turn.TurnFreeServiceState
 
@@ -52,6 +56,7 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityMainBinding
     private val preferences by lazy { TurnFreePreferences(this) }
+    private val appInventory by lazy { TurnFreeAppInventory(this) }
     private val activityManager by lazy { getSystemService<ActivityManager>() }
     private val powerManager by lazy { getSystemService<PowerManager>() }
     private var currentProfile = TurnFreeProfile()
@@ -59,7 +64,8 @@ class MainActivity : AppCompatActivity() {
     private var suppressUiEvents = false
     private var receiverRegistered = false
     private var advancedVisible = false
-    private var lastStablePhase = ConnectionPhase.Idle
+    private var currentConnectionProgress = TurnFreeConnectionProgress.idle()
+    private var lastStableProgress = TurnFreeConnectionProgress.idle()
     private var pendingStartAfterPermissionFlow = false
     private var manualCaptchaDialog: Dialog? = null
     private var captchaWebView: WebView? = null
@@ -89,8 +95,10 @@ class MainActivity : AppCompatActivity() {
                 startTurnServiceInternal()
             } else {
                 val message = getString(R.string.status_vpn_permission_denied)
+                currentServiceState = TurnFreeServiceState.Failed
+                renderLaunchButton(currentServiceState)
                 setStatus(message)
-                renderConnectionProgress(currentServiceState, message)
+                renderConnectionProgress(currentServiceState, null, message)
                 pendingStartAfterPermissionFlow = false
             }
         }
@@ -98,45 +106,73 @@ class MainActivity : AppCompatActivity() {
     private val turnServiceReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             if (intent == null) return
+            val progress = TurnFreeServiceContract.readProgress(intent)
+            val state = runCatching {
+                TurnFreeServiceState.valueOf(intent.getStringExtra(TurnFreeServiceContract.EXTRA_STATE).orEmpty())
+            }.getOrNull()
 
             when (intent.action) {
                 TurnFreeServiceContract.ACTION_STATE_CHANGED -> {
-                    val state = runCatching {
-                        TurnFreeServiceState.valueOf(intent.getStringExtra(TurnFreeServiceContract.EXTRA_STATE).orEmpty())
-                    }.getOrNull()
-
                     if (state != null) {
                         currentServiceState = state
                         renderLaunchButton(state)
+                        if (state == TurnFreeServiceState.Failed || state == TurnFreeServiceState.Stopping) {
+                            dismissManualCaptchaDialog()
+                        }
                     }
 
                     val message = intent.getStringExtra(TurnFreeServiceContract.EXTRA_MESSAGE).orEmpty()
                     if (message.isNotBlank()) {
                         setStatus(message)
                     }
-                    renderConnectionProgress(state ?: currentServiceState, message)
+                    renderConnectionProgress(state ?: currentServiceState, progress, message)
+                }
+
+                TurnFreeServiceContract.ACTION_PROGRESS_CHANGED -> {
+                    renderConnectionProgress(
+                        state = state ?: currentServiceState,
+                        progress = progress,
+                        message = binding.statusText.text?.toString().orEmpty(),
+                    )
                 }
 
                 TurnFreeServiceContract.ACTION_DTLS_ESTABLISHED -> {
+                    state?.let {
+                        currentServiceState = it
+                        renderLaunchButton(it)
+                    }
                     dismissManualCaptchaDialog()
                     val message = intent.getStringExtra(TurnFreeServiceContract.EXTRA_MESSAGE).orEmpty()
                         .ifBlank { getString(R.string.status_turn_established) }
                     setStatus(message)
-                    renderConnectionProgress(TurnFreeServiceState.Established, message)
+                    renderConnectionProgress(TurnFreeServiceState.Established, progress, message)
                 }
 
                 TurnFreeServiceContract.ACTION_WIREGUARD_START_REQUESTED -> {
+                    state?.let {
+                        currentServiceState = it
+                        renderLaunchButton(it)
+                    }
                     dismissManualCaptchaDialog()
                     val message = intent.getStringExtra(TurnFreeServiceContract.EXTRA_MESSAGE).orEmpty()
                         .ifBlank { getString(R.string.status_wireguard_start_requested) }
                     setStatus(message)
-                    renderConnectionProgress(TurnFreeServiceState.WireGuardStarting, message)
+                    renderConnectionProgress(TurnFreeServiceState.WireGuardStarting, progress, message)
                 }
 
                 TurnFreeServiceContract.ACTION_MANUAL_CAPTCHA_REQUIRED -> {
+                    if (state != null) {
+                        currentServiceState = state
+                    }
                     val message = intent.getStringExtra(TurnFreeServiceContract.EXTRA_MESSAGE).orEmpty()
                     val url = intent.getStringExtra(TurnFreeServiceContract.EXTRA_URL).orEmpty()
                     val sessionId = intent.getLongExtra(TurnFreeServiceContract.EXTRA_CAPTCHA_SESSION_ID, -1L)
+                    setStatus(message.ifBlank { getString(R.string.status_manual_captcha_required) })
+                    renderConnectionProgress(
+                        state = state ?: currentServiceState,
+                        progress = progress,
+                        message = message,
+                    )
                     showManualCaptchaDialog(
                         message = message.ifBlank { getString(R.string.status_manual_captcha_required) },
                         url = url,
@@ -149,6 +185,11 @@ class MainActivity : AppCompatActivity() {
                     if (sessionId < 0 || sessionId == currentCaptchaSessionId) {
                         dismissManualCaptchaDialog()
                     }
+                    renderConnectionProgress(
+                        state = state ?: currentServiceState,
+                        progress = progress,
+                        message = binding.statusText.text?.toString().orEmpty(),
+                    )
                 }
             }
         }
@@ -192,7 +233,11 @@ class MainActivity : AppCompatActivity() {
         }
         reconcileSavedServiceState()
         renderLaunchButton(currentServiceState)
-        renderConnectionProgress(currentServiceState, binding.statusText.text?.toString().orEmpty())
+        renderConnectionProgress(
+            state = currentServiceState,
+            progress = null,
+            message = binding.statusText.text?.toString().orEmpty(),
+        )
     }
 
     private fun setupStreamsSpinner() {
@@ -223,6 +268,10 @@ class MainActivity : AppCompatActivity() {
             advancedVisible = !advancedVisible
             renderAdvancedSettingsVisibility()
         }
+
+        binding.splitTunnelAppsButton.setOnClickListener {
+            showSplitTunnelAppsDialog()
+        }
     }
 
     private fun bindAutoSaveListeners() {
@@ -239,6 +288,14 @@ class MainActivity : AppCompatActivity() {
         }
 
         binding.noDtlsSwitch.setOnCheckedChangeListener { _, _ ->
+            if (!suppressUiEvents) saveUiStateFromInputs()
+        }
+
+        binding.alwaysManualCaptchaSwitch.setOnCheckedChangeListener { _, _ ->
+            if (!suppressUiEvents) saveUiStateFromInputs()
+        }
+
+        binding.splitTunnelModeGroup.setOnCheckedChangeListener { _, _ ->
             if (!suppressUiEvents) saveUiStateFromInputs()
         }
 
@@ -326,16 +383,24 @@ class MainActivity : AppCompatActivity() {
         binding.streamsSpinner.setSelection(profile.streams.coerceIn(1, 12) - 1, false)
         binding.udpSwitch.isChecked = profile.udp
         binding.noDtlsSwitch.isChecked = profile.noDtls
+        binding.alwaysManualCaptchaSwitch.isChecked = profile.alwaysManualCaptcha
+        when (profile.splitTunnelMode) {
+            TurnFreeSplitTunnelMode.Disabled -> binding.splitTunnelModeDisabled.isChecked = true
+            TurnFreeSplitTunnelMode.ExcludeSelected -> binding.splitTunnelModeExclude.isChecked = true
+            TurnFreeSplitTunnelMode.OnlySelected -> binding.splitTunnelModeIncludeOnly.isChecked = true
+        }
         binding.lastImportValue.text = if (profile.importLabel.isBlank()) {
             getString(R.string.last_import_empty)
         } else {
             getString(R.string.last_import_source_format, profile.importLabel)
         }
+        renderSplitTunnelSummary(profile)
         renderAdvancedSettingsVisibility()
         suppressUiEvents = false
     }
 
     private fun saveUiStateFromInputs() {
+        val splitTunnelMode = selectedSplitTunnelModeFromUi()
         currentProfile = currentProfile.copy(
             profileName = binding.profileNameInput.text?.toString().orEmpty().trim(),
             peer = binding.peerInput.text?.toString().orEmpty().trim(),
@@ -347,8 +412,11 @@ class MainActivity : AppCompatActivity() {
             streams = (binding.streamsSpinner.selectedItem?.toString()?.toIntOrNull() ?: 2).coerceIn(1, 12),
             udp = binding.udpSwitch.isChecked,
             noDtls = binding.noDtlsSwitch.isChecked,
+            alwaysManualCaptcha = binding.alwaysManualCaptchaSwitch.isChecked,
+            splitTunnelMode = splitTunnelMode,
         )
         preferences.save(currentProfile)
+        renderSplitTunnelSummary(currentProfile)
     }
 
     private fun renderAdvancedSettingsVisibility() {
@@ -357,6 +425,111 @@ class MainActivity : AppCompatActivity() {
             getString(R.string.advanced_settings_toggle_hide)
         } else {
             getString(R.string.advanced_settings_toggle_show)
+        }
+        renderSplitTunnelSummary(currentProfile)
+    }
+
+    private fun selectedSplitTunnelModeFromUi(): TurnFreeSplitTunnelMode {
+        return when (binding.splitTunnelModeGroup.checkedRadioButtonId) {
+            R.id.splitTunnelModeExclude -> TurnFreeSplitTunnelMode.ExcludeSelected
+            R.id.splitTunnelModeIncludeOnly -> TurnFreeSplitTunnelMode.OnlySelected
+            else -> TurnFreeSplitTunnelMode.Disabled
+        }
+    }
+
+    private fun renderSplitTunnelSummary(profile: TurnFreeProfile) {
+        val selectedCount = profile.splitTunnelPackages.size
+        binding.splitTunnelAppsButton.text = if (selectedCount > 0) {
+            getString(R.string.split_tunnel_apps_button_with_count, selectedCount)
+        } else {
+            getString(R.string.split_tunnel_apps_button)
+        }
+
+        binding.splitTunnelSummaryText.text = when (profile.splitTunnelMode) {
+            TurnFreeSplitTunnelMode.Disabled -> getString(R.string.split_tunnel_summary_disabled)
+            TurnFreeSplitTunnelMode.ExcludeSelected -> {
+                if (selectedCount == 0) {
+                    getString(R.string.split_tunnel_summary_exclude_none)
+                } else {
+                    getString(R.string.split_tunnel_summary_exclude_count, selectedCount)
+                }
+            }
+
+            TurnFreeSplitTunnelMode.OnlySelected -> {
+                if (selectedCount == 0) {
+                    getString(R.string.split_tunnel_summary_include_none)
+                } else {
+                    getString(R.string.split_tunnel_summary_include_count, selectedCount)
+                }
+            }
+        }
+    }
+
+    private fun showSplitTunnelAppsDialog() {
+        saveUiStateFromInputs()
+        val installedApps = appInventory.loadLaunchableApps()
+        if (installedApps.isEmpty()) {
+            MaterialAlertDialogBuilder(this)
+                .setTitle(R.string.split_tunnel_picker_title)
+                .setMessage(R.string.split_tunnel_picker_empty)
+                .setPositiveButton(android.R.string.ok, null)
+                .show()
+            return
+        }
+
+        val dialogBinding = DialogSplitTunnelAppsBinding.inflate(layoutInflater)
+        val adapter = TurnFreeSplitTunnelAppAdapter(
+            context = this,
+            allApps = installedApps,
+            initialSelection = currentProfile.splitTunnelPackages,
+        )
+        dialogBinding.splitTunnelAppsList.adapter = adapter
+        dialogBinding.splitTunnelAppsList.emptyView = dialogBinding.splitTunnelAppsEmpty
+        dialogBinding.splitTunnelAppsList.setOnItemClickListener { _, _, position, _ ->
+            adapter.toggleSelection(position)
+        }
+        dialogBinding.splitTunnelSearchInput.doAfterTextChanged { text ->
+            dialogBinding.splitTunnelAppsEmpty.text = getString(
+                if (text.isNullOrBlank()) {
+                    R.string.split_tunnel_picker_empty
+                } else {
+                    R.string.split_tunnel_picker_no_results
+                },
+            )
+            adapter.updateQuery(text?.toString().orEmpty())
+        }
+
+        MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.split_tunnel_picker_title)
+            .setView(dialogBinding.root)
+            .setNeutralButton(R.string.split_tunnel_picker_clear) { _, _ ->
+                applySplitTunnelSelection(emptySet())
+                setStatus(splitTunnelSelectionStatus(cleared = true))
+            }
+            .setNegativeButton(R.string.split_tunnel_picker_cancel, null)
+            .setPositiveButton(R.string.split_tunnel_picker_save) { _, _ ->
+                applySplitTunnelSelection(adapter.currentSelection())
+                setStatus(splitTunnelSelectionStatus(cleared = false))
+            }
+            .show()
+    }
+
+    private fun applySplitTunnelSelection(selectedPackages: Set<String>) {
+        currentProfile = currentProfile.copy(splitTunnelPackages = selectedPackages)
+        preferences.save(currentProfile)
+        renderSplitTunnelSummary(currentProfile)
+    }
+
+    private fun splitTunnelSelectionStatus(cleared: Boolean): String {
+        return if (
+            currentProfile.splitTunnelMode == TurnFreeSplitTunnelMode.OnlySelected &&
+            currentProfile.splitTunnelPackages.isEmpty()
+        ) {
+            getString(R.string.split_tunnel_status_select_required)
+        } else if (cleared) {
+            getString(R.string.split_tunnel_status_cleared)
+        } else {
+            getString(R.string.split_tunnel_status_updated)
         }
     }
 
@@ -404,47 +577,230 @@ class MainActivity : AppCompatActivity() {
         binding.launchButton.alpha = if (isActive && !isConnected) 0.98f else 1f
     }
 
-    private fun renderConnectionProgress(state: TurnFreeServiceState, message: String) {
-        val phase = when (state) {
-            TurnFreeServiceState.Failed -> lastStablePhase
-            else -> mapPhase(state)
+    private fun renderConnectionProgress(
+        state: TurnFreeServiceState,
+        progress: TurnFreeConnectionProgress? = null,
+        message: String,
+    ) {
+        val fallback = fallbackProgressForState(state)
+        val resolved = when (state) {
+            TurnFreeServiceState.Failed -> {
+                val stable = if (lastStableProgress.stage == TurnFreeConnectionProgress.Stage.Idle) fallback else lastStableProgress
+                stable.copy(stage = TurnFreeConnectionProgress.Stage.Failed)
+            }
+
+            else -> progress ?: fallback
         }
 
         if (state != TurnFreeServiceState.Failed && state != TurnFreeServiceState.Reconnecting) {
-            lastStablePhase = phase
+            lastStableProgress = resolved
         }
+        currentConnectionProgress = resolved
 
-        val shouldShow = state != TurnFreeServiceState.Idle
+        val shouldShow = state != TurnFreeServiceState.Idle || resolved.stage != TurnFreeConnectionProgress.Stage.Idle
         binding.connectionProgressBar.isVisible = shouldShow
-        binding.connectionProgressBar.progress = phase.progress
+        binding.connectionProgressBar.isIndeterminate = false
+        binding.connectionProgressBar.setProgressCompat(resolved.progressPercent, true)
 
         binding.connectionStageText.text = when (state) {
             TurnFreeServiceState.Failed -> getString(
                 R.string.progress_stage_failed_at,
-                getString(phase.stageLabelRes),
+                buildProgressStageLabel(resolved),
             )
+
             TurnFreeServiceState.Reconnecting -> getString(R.string.progress_stage_reconnecting)
-            else -> getString(phase.stageLabelRes)
+            else -> buildProgressStageLabel(resolved)
         }
 
         binding.connectionCauseText.text = when (state) {
             TurnFreeServiceState.Failed,
             TurnFreeServiceState.Reconnecting -> mapFailureHint(message)
-            else -> getString(R.string.progress_cause_hint_idle)
+
+            else -> buildProgressDetail(resolved)
         }
     }
 
-    private fun mapPhase(state: TurnFreeServiceState): ConnectionPhase {
+    private fun fallbackProgressForState(state: TurnFreeServiceState): TurnFreeConnectionProgress {
+        val totalStreams = currentProfile.streams.coerceIn(1, 12)
         return when (state) {
-            TurnFreeServiceState.Idle -> ConnectionPhase.Idle
-            TurnFreeServiceState.Starting -> ConnectionPhase.StartingDtls
-            TurnFreeServiceState.Establishing -> ConnectionPhase.WaitingDtls
-            TurnFreeServiceState.Established -> ConnectionPhase.DtlsEstablished
-            TurnFreeServiceState.WireGuardStarting -> ConnectionPhase.WireGuardStarting
-            TurnFreeServiceState.WireGuardRunning -> ConnectionPhase.Connected
-            TurnFreeServiceState.Reconnecting -> ConnectionPhase.Reconnecting
-            TurnFreeServiceState.Stopping -> ConnectionPhase.Stopping
-            TurnFreeServiceState.Failed -> lastStablePhase
+            TurnFreeServiceState.Idle -> TurnFreeConnectionProgress.idle(totalStreams)
+            TurnFreeServiceState.Starting -> TurnFreeConnectionProgress.startingTurn(totalStreams)
+            TurnFreeServiceState.Establishing -> TurnFreeConnectionProgress(
+                stage = TurnFreeConnectionProgress.Stage.WaitingForStreams,
+                progressPercent = 32,
+                totalStreams = totalStreams,
+                activeStreams = 0,
+                readyStreams = 0,
+                captchaStep = 0,
+                manualCaptcha = false,
+                reconnectAttempt = 0,
+                reconnectLimit = 0,
+            )
+
+            TurnFreeServiceState.Established -> TurnFreeConnectionProgress(
+                stage = TurnFreeConnectionProgress.Stage.TurnReady,
+                progressPercent = 76,
+                totalStreams = totalStreams,
+                activeStreams = 1.coerceAtMost(totalStreams),
+                readyStreams = 1.coerceAtMost(totalStreams),
+                captchaStep = 0,
+                manualCaptcha = false,
+                reconnectAttempt = 0,
+                reconnectLimit = 0,
+            )
+
+            TurnFreeServiceState.WireGuardStarting -> TurnFreeConnectionProgress(
+                stage = TurnFreeConnectionProgress.Stage.StartingWireGuard,
+                progressPercent = 88,
+                totalStreams = totalStreams,
+                activeStreams = 1.coerceAtMost(totalStreams),
+                readyStreams = 1.coerceAtMost(totalStreams),
+                captchaStep = 0,
+                manualCaptcha = false,
+                reconnectAttempt = 0,
+                reconnectLimit = 0,
+            )
+
+            TurnFreeServiceState.WireGuardRunning -> TurnFreeConnectionProgress(
+                stage = TurnFreeConnectionProgress.Stage.Connected,
+                progressPercent = 100,
+                totalStreams = totalStreams,
+                activeStreams = totalStreams,
+                readyStreams = totalStreams,
+                captchaStep = 0,
+                manualCaptcha = false,
+                reconnectAttempt = 0,
+                reconnectLimit = 0,
+            )
+
+            TurnFreeServiceState.Reconnecting -> TurnFreeConnectionProgress(
+                stage = TurnFreeConnectionProgress.Stage.Reconnecting,
+                progressPercent = 24,
+                totalStreams = totalStreams,
+                activeStreams = 0,
+                readyStreams = 0,
+                captchaStep = 0,
+                manualCaptcha = false,
+                reconnectAttempt = 0,
+                reconnectLimit = 0,
+            )
+
+            TurnFreeServiceState.Stopping -> TurnFreeConnectionProgress.stopping(totalStreams)
+            TurnFreeServiceState.Failed -> lastStableProgress.copy(stage = TurnFreeConnectionProgress.Stage.Failed)
+        }
+    }
+
+    private fun buildProgressStageLabel(progress: TurnFreeConnectionProgress): String {
+        return when (progress.stage) {
+            TurnFreeConnectionProgress.Stage.Idle -> getString(R.string.progress_stage_idle)
+            TurnFreeConnectionProgress.Stage.RequestingPermissions -> getString(R.string.progress_stage_requesting_permissions)
+            TurnFreeConnectionProgress.Stage.StartingService -> getString(R.string.progress_stage_starting_service)
+            TurnFreeConnectionProgress.Stage.PreparingTurn -> getString(R.string.progress_stage_preparing_turn)
+            TurnFreeConnectionProgress.Stage.StartingTurn -> getString(R.string.progress_stage_starting_dtls)
+            TurnFreeConnectionProgress.Stage.WaitingForStreams -> {
+                if (progress.readyStreams > 0 || progress.totalStreams > 1) {
+                    getString(
+                        R.string.progress_stage_waiting_streams_format,
+                        progress.readyStreams,
+                        progress.totalStreams,
+                    )
+                } else {
+                    getString(R.string.progress_stage_waiting_streams)
+                }
+            }
+
+            TurnFreeConnectionProgress.Stage.WaitingForCaptcha -> when {
+                progress.manualCaptcha -> getString(R.string.progress_stage_waiting_captcha_manual)
+                progress.captchaStep > 0 -> getString(
+                    R.string.progress_stage_waiting_captcha_step,
+                    progress.captchaStep,
+                )
+
+                else -> getString(R.string.progress_stage_waiting_captcha)
+            }
+
+            TurnFreeConnectionProgress.Stage.TurnReady -> getString(
+                R.string.progress_stage_turn_ready_format,
+                progress.readyStreams.coerceAtLeast(1),
+                progress.totalStreams,
+            )
+
+            TurnFreeConnectionProgress.Stage.StartingWireGuard -> getString(
+                R.string.progress_stage_starting_wireguard_format,
+                progress.readyStreams.coerceAtLeast(1),
+                progress.totalStreams,
+            )
+
+            TurnFreeConnectionProgress.Stage.Connected -> {
+                if (progress.readyStreams in 1 until progress.totalStreams) {
+                    getString(
+                        R.string.progress_stage_connected_warming_format,
+                        progress.readyStreams,
+                        progress.totalStreams,
+                    )
+                } else {
+                    getString(R.string.progress_stage_connected)
+                }
+            }
+
+            TurnFreeConnectionProgress.Stage.Reconnecting -> getString(R.string.progress_stage_reconnecting)
+            TurnFreeConnectionProgress.Stage.Stopping -> getString(R.string.progress_stage_stopping)
+            TurnFreeConnectionProgress.Stage.Failed -> buildProgressStageLabel(lastStableProgress)
+        }
+    }
+
+    private fun buildProgressDetail(progress: TurnFreeConnectionProgress): String {
+        return when (progress.stage) {
+            TurnFreeConnectionProgress.Stage.Idle -> getString(R.string.progress_cause_hint_idle)
+            TurnFreeConnectionProgress.Stage.RequestingPermissions -> getString(R.string.progress_detail_permissions)
+            TurnFreeConnectionProgress.Stage.StartingService -> getString(R.string.progress_detail_starting_service)
+            TurnFreeConnectionProgress.Stage.PreparingTurn -> getString(
+                R.string.progress_detail_preparing_turn_format,
+                progress.totalStreams,
+            )
+
+            TurnFreeConnectionProgress.Stage.StartingTurn,
+            TurnFreeConnectionProgress.Stage.WaitingForStreams,
+            -> getString(
+                R.string.progress_detail_streams_format,
+                progress.activeStreams.coerceAtLeast(progress.readyStreams),
+                progress.totalStreams,
+                progress.readyStreams,
+            )
+
+            TurnFreeConnectionProgress.Stage.WaitingForCaptcha -> when {
+                progress.manualCaptcha -> getString(R.string.progress_detail_captcha_manual)
+                progress.captchaStep > 0 -> getString(
+                    R.string.progress_detail_captcha_auto_step,
+                    progress.captchaStep,
+                )
+
+                else -> getString(R.string.progress_detail_captcha_auto)
+            }
+
+            TurnFreeConnectionProgress.Stage.TurnReady -> getString(
+                R.string.progress_detail_turn_ready_format,
+                progress.readyStreams.coerceAtLeast(1),
+                progress.totalStreams,
+            )
+
+            TurnFreeConnectionProgress.Stage.StartingWireGuard -> getString(R.string.progress_detail_wireguard_starting)
+            TurnFreeConnectionProgress.Stage.Connected -> {
+                if (progress.readyStreams in 1 until progress.totalStreams) {
+                    getString(
+                        R.string.progress_detail_connected_warming_format,
+                        progress.readyStreams,
+                        progress.totalStreams,
+                    )
+                } else {
+                    getString(R.string.progress_detail_connected)
+                }
+            }
+
+            TurnFreeConnectionProgress.Stage.Reconnecting,
+            TurnFreeConnectionProgress.Stage.Failed,
+            TurnFreeConnectionProgress.Stage.Stopping,
+            -> getString(R.string.progress_cause_hint_idle)
         }
     }
 
@@ -459,10 +815,11 @@ class MainActivity : AppCompatActivity() {
             message.contains("dns") || message.contains("resolve") -> getString(R.string.progress_cause_dns)
             message.contains("timeout") || message.contains("watchdog") -> getString(R.string.progress_cause_timeout)
             message.contains("wireguard") || message.contains("wg") -> getString(R.string.progress_cause_wireguard)
+            message.contains("хотя бы одно приложение") || message.contains("split tunnel") -> getString(R.string.progress_cause_split_tunnel)
             message.contains("amnezia") -> getString(R.string.progress_cause_amnezia)
             message.contains("binary") || message.contains("not found") -> getString(R.string.progress_cause_binary)
             message.contains("refused") || message.contains("unreachable") || message.contains("network") -> getString(R.string.progress_cause_network_path)
-            message.contains("captcha") -> getString(R.string.progress_cause_captcha)
+            message.contains("captcha") || message.contains("капч") -> getString(R.string.progress_cause_captcha)
             message.contains("challenge") ||
                 message.contains("turnstile") ||
                 message.contains("manual captcha") ||
@@ -715,7 +1072,25 @@ class MainActivity : AppCompatActivity() {
 
     private fun startTurnService() {
         saveUiStateFromInputs()
+        if (
+            currentProfile.splitTunnelMode == TurnFreeSplitTunnelMode.OnlySelected &&
+            currentProfile.splitTunnelPackages.isEmpty()
+        ) {
+            currentServiceState = TurnFreeServiceState.Failed
+            renderLaunchButton(currentServiceState)
+            val message = getString(R.string.status_split_tunnel_invalid_selection)
+            setStatus(message)
+            renderConnectionProgress(currentServiceState, null, message)
+            return
+        }
+        currentServiceState = TurnFreeServiceState.Starting
+        renderLaunchButton(currentServiceState)
         pendingStartAfterPermissionFlow = true
+        renderConnectionProgress(
+            state = currentServiceState,
+            progress = TurnFreeConnectionProgress.requestingPermissions(currentProfile.streams),
+            message = binding.statusText.text?.toString().orEmpty(),
+        )
         continueStartupPermissionFlow()
     }
 
@@ -726,16 +1101,26 @@ class MainActivity : AppCompatActivity() {
         renderLaunchButton(currentServiceState)
         val message = getString(R.string.status_turn_stopping)
         setStatus(message)
-        renderConnectionProgress(TurnFreeServiceState.Stopping, message)
+        renderConnectionProgress(
+            state = TurnFreeServiceState.Stopping,
+            progress = TurnFreeConnectionProgress.stopping(currentProfile.streams),
+            message = message,
+        )
     }
 
     private fun startTurnServiceInternal() {
         pendingStartAfterPermissionFlow = false
         val intent = TurnFreeServiceContract.createStartIntent(this, currentProfile)
         ContextCompat.startForegroundService(this, intent)
+        currentServiceState = TurnFreeServiceState.Starting
+        renderLaunchButton(currentServiceState)
         val message = getString(R.string.status_turn_service_requested)
         setStatus(message)
-        renderConnectionProgress(TurnFreeServiceState.Starting, message)
+        renderConnectionProgress(
+            state = TurnFreeServiceState.Starting,
+            progress = TurnFreeConnectionProgress.startingService(currentProfile.streams),
+            message = message,
+        )
     }
 
     private fun continueStartupPermissionFlow() {
@@ -743,14 +1128,26 @@ class MainActivity : AppCompatActivity() {
 
         if (shouldRequestNotificationPermission()) {
             preferences.markNotificationPermissionRequested()
-            setStatus(getString(R.string.status_notification_permission_requested))
+            val message = getString(R.string.status_notification_permission_requested)
+            setStatus(message)
+            renderConnectionProgress(
+                state = currentServiceState,
+                progress = TurnFreeConnectionProgress.requestingPermissions(currentProfile.streams),
+                message = message,
+            )
             notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
             return
         }
 
         if (shouldRequestBatteryOptimizationExemption()) {
             preferences.markBatteryOptimizationPermissionRequested()
-            setStatus(getString(R.string.status_battery_optimization_requested))
+            val message = getString(R.string.status_battery_optimization_requested)
+            setStatus(message)
+            renderConnectionProgress(
+                state = currentServiceState,
+                progress = TurnFreeConnectionProgress.requestingPermissions(currentProfile.streams),
+                message = message,
+            )
             batteryOptimizationLauncher.launch(
                 Intent(
                     Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
@@ -765,7 +1162,11 @@ class MainActivity : AppCompatActivity() {
         if (permissionIntent != null) {
             val message = getString(R.string.status_vpn_permission_required)
             setStatus(message)
-            renderConnectionProgress(TurnFreeServiceState.Starting, message)
+            renderConnectionProgress(
+                state = currentServiceState,
+                progress = TurnFreeConnectionProgress.requestingPermissions(currentProfile.streams),
+                message = message,
+            )
             vpnPermissionLauncher.launch(permissionIntent)
             return
         }
@@ -779,7 +1180,10 @@ class MainActivity : AppCompatActivity() {
             profile.turnHostOverride.isNotBlank() ||
             profile.turnPortOverride.isNotBlank() ||
             profile.noDtls ||
-            profile.wireGuardConfigText.isNotBlank()
+            profile.alwaysManualCaptcha ||
+            profile.wireGuardConfigText.isNotBlank() ||
+            profile.splitTunnelMode != TurnFreeSplitTunnelMode.Disabled ||
+            profile.splitTunnelPackages.isNotEmpty()
     }
 
     private fun shouldRequestNotificationPermission(): Boolean {
@@ -830,20 +1234,25 @@ class MainActivity : AppCompatActivity() {
         super.onStart()
         reconcileSavedServiceState()
         renderLaunchButton(currentServiceState)
-        renderConnectionProgress(currentServiceState, binding.statusText.text?.toString().orEmpty())
+        renderConnectionProgress(
+            state = currentServiceState,
+            progress = null,
+            message = binding.statusText.text?.toString().orEmpty(),
+        )
         if (!receiverRegistered) {
             ContextCompat.registerReceiver(
                 this,
                 turnServiceReceiver,
                 IntentFilter().apply {
-                addAction(TurnFreeServiceContract.ACTION_STATE_CHANGED)
-                addAction(TurnFreeServiceContract.ACTION_DTLS_ESTABLISHED)
-                addAction(TurnFreeServiceContract.ACTION_WIREGUARD_START_REQUESTED)
-                addAction(TurnFreeServiceContract.ACTION_MANUAL_CAPTCHA_REQUIRED)
-                addAction(TurnFreeServiceContract.ACTION_MANUAL_CAPTCHA_RESOLVED)
+                    addAction(TurnFreeServiceContract.ACTION_STATE_CHANGED)
+                    addAction(TurnFreeServiceContract.ACTION_PROGRESS_CHANGED)
+                    addAction(TurnFreeServiceContract.ACTION_DTLS_ESTABLISHED)
+                    addAction(TurnFreeServiceContract.ACTION_WIREGUARD_START_REQUESTED)
+                    addAction(TurnFreeServiceContract.ACTION_MANUAL_CAPTCHA_REQUIRED)
+                    addAction(TurnFreeServiceContract.ACTION_MANUAL_CAPTCHA_RESOLVED)
                 },
-            ContextCompat.RECEIVER_NOT_EXPORTED,
-        )
+                ContextCompat.RECEIVER_NOT_EXPORTED,
+            )
             receiverRegistered = true
         }
     }
@@ -854,17 +1263,6 @@ class MainActivity : AppCompatActivity() {
             receiverRegistered = false
         }
         super.onStop()
-    }
-
-    private enum class ConnectionPhase(val progress: Int, val stageLabelRes: Int) {
-        Idle(0, R.string.progress_stage_idle),
-        StartingDtls(20, R.string.progress_stage_starting_dtls),
-        WaitingDtls(50, R.string.progress_stage_waiting_dtls),
-        DtlsEstablished(70, R.string.progress_stage_dtls_established),
-        WireGuardStarting(85, R.string.progress_stage_starting_wireguard),
-        Connected(100, R.string.progress_stage_connected),
-        Reconnecting(35, R.string.progress_stage_reconnecting),
-        Stopping(5, R.string.progress_stage_stopping),
     }
 
     companion object {

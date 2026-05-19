@@ -19,9 +19,18 @@ class TurnFreePreferences(context: Context) {
             streams = prefs.getInt(KEY_STREAMS, 2).coerceIn(1, 12),
             udp = prefs.getBoolean(KEY_UDP, true),
             noDtls = prefs.getBoolean(KEY_NO_DTLS, false),
+            alwaysManualCaptcha = prefs.getBoolean(KEY_ALWAYS_MANUAL_CAPTCHA, false),
             hasAmneziaWg = prefs.getBoolean(KEY_HAS_AMNEZIA_WG, false),
             wireGuardConfigText = prefs.getString(KEY_WG_TEXT, "").orEmpty(),
             importLabel = prefs.getString(KEY_IMPORT_LABEL, "").orEmpty(),
+            splitTunnelMode = TurnFreeSplitTunnelMode.fromPersisted(
+                prefs.getString(KEY_SPLIT_TUNNEL_MODE, TurnFreeSplitTunnelMode.Disabled.name),
+            ),
+            splitTunnelPackages = prefs.getStringSet(KEY_SPLIT_TUNNEL_PACKAGES, emptySet())
+                ?.map(String::trim)
+                ?.filter(String::isNotBlank)
+                ?.toSet()
+                .orEmpty(),
         )
     }
 
@@ -36,9 +45,12 @@ class TurnFreePreferences(context: Context) {
             putInt(KEY_STREAMS, profile.streams.coerceIn(1, 12))
             putBoolean(KEY_UDP, profile.udp)
             putBoolean(KEY_NO_DTLS, profile.noDtls)
+            putBoolean(KEY_ALWAYS_MANUAL_CAPTCHA, profile.alwaysManualCaptcha)
             putBoolean(KEY_HAS_AMNEZIA_WG, profile.hasAmneziaWg)
             putString(KEY_WG_TEXT, profile.wireGuardConfigText)
             putString(KEY_IMPORT_LABEL, profile.importLabel)
+            putString(KEY_SPLIT_TUNNEL_MODE, profile.splitTunnelMode.name)
+            putStringSet(KEY_SPLIT_TUNNEL_PACKAGES, profile.splitTunnelPackages.toSortedSet())
         }
     }
 
@@ -85,9 +97,12 @@ class TurnFreePreferences(context: Context) {
         const val KEY_STREAMS = "streams"
         const val KEY_UDP = "udp"
         const val KEY_NO_DTLS = "no_dtls"
+        const val KEY_ALWAYS_MANUAL_CAPTCHA = "always_manual_captcha"
         const val KEY_HAS_AMNEZIA_WG = "has_amnezia_wg"
         const val KEY_WG_TEXT = "wg_text"
         const val KEY_IMPORT_LABEL = "import_label"
+        const val KEY_SPLIT_TUNNEL_MODE = "split_tunnel_mode"
+        const val KEY_SPLIT_TUNNEL_PACKAGES = "split_tunnel_packages"
         const val KEY_SERVICE_STATE = "service_state"
         const val KEY_REQUESTED_NOTIFICATION_PERMISSION = "requested_notification_permission"
         const val KEY_REQUESTED_BATTERY_OPTIMIZATION_PERMISSION = "requested_battery_optimization_permission"

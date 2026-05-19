@@ -323,6 +323,15 @@
                             android:textColor="@color/text_primary"
                             android:textSize="14sp" />
 
+                        <com.google.android.material.switchmaterial.SwitchMaterial
+                            android:id="@+id/alwaysManualCaptchaSwitch"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="6dp"
+                            android:text="@string/always_manual_captcha_label"
+                            android:textColor="@color/text_primary"
+                            android:textSize="14sp" />
+
                         <com.google.android.material.textfield.TextInputLayout
                             android:layout_width="match_parent"
                             android:layout_height="wrap_content"
@@ -345,6 +354,84 @@
                                 android:textColor="@color/text_primary"
                                 android:textColorHint="@color/text_secondary" />
                         </com.google.android.material.textfield.TextInputLayout>
+
+                        <View
+                            android:layout_width="match_parent"
+                            android:layout_height="1dp"
+                            android:layout_marginTop="14dp"
+                            android:background="@color/separator" />
+
+                        <TextView
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="14dp"
+                            android:text="@string/split_tunnel_title"
+                            android:textColor="@color/text_primary"
+                            android:textSize="14sp"
+                            android:textStyle="bold" />
+
+                        <TextView
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="4dp"
+                            android:text="@string/split_tunnel_hint"
+                            android:textColor="@color/text_secondary"
+                            android:textSize="12sp"
+                            android:lineSpacingExtra="1dp" />
+
+                        <RadioGroup
+                            android:id="@+id/splitTunnelModeGroup"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="10dp"
+                            android:orientation="vertical">
+
+                            <com.google.android.material.radiobutton.MaterialRadioButton
+                                android:id="@+id/splitTunnelModeDisabled"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:text="@string/split_tunnel_mode_disabled"
+                                android:textColor="@color/text_primary" />
+
+                            <com.google.android.material.radiobutton.MaterialRadioButton
+                                android:id="@+id/splitTunnelModeExclude"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:layout_marginTop="6dp"
+                                android:text="@string/split_tunnel_mode_exclude"
+                                android:textColor="@color/text_primary" />
+
+                            <com.google.android.material.radiobutton.MaterialRadioButton
+                                android:id="@+id/splitTunnelModeIncludeOnly"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:layout_marginTop="6dp"
+                                android:text="@string/split_tunnel_mode_only_selected"
+                                android:textColor="@color/text_primary" />
+                        </RadioGroup>
+
+                        <com.google.android.material.button.MaterialButton
+                            android:id="@+id/splitTunnelAppsButton"
+                            android:layout_width="match_parent"
+                            android:layout_height="48dp"
+                            android:layout_marginTop="10dp"
+                            android:text="@string/split_tunnel_apps_button"
+                            android:textAllCaps="false"
+                            android:textColor="@color/app_button"
+                            app:backgroundTint="@color/app_button_soft"
+                            app:cornerRadius="16dp"
+                            app:strokeColor="@color/app_button"
+                            app:strokeWidth="1dp" />
+
+                        <TextView
+                            android:id="@+id/splitTunnelSummaryText"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="8dp"
+                            android:text="@string/split_tunnel_summary_disabled"
+                            android:textColor="@color/text_secondary"
+                            android:textSize="12sp"
+                            android:lineSpacingExtra="1dp" />
                     </LinearLayout>
                 </LinearLayout>
             </LinearLayout>

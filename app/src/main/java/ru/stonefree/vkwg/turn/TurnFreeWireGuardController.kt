@@ -31,7 +31,7 @@ class TurnFreeWireGuardController(
     private var lastState: Tunnel.State = Tunnel.State.DOWN
 
     suspend fun start(profile: TurnFreeProfile): Tunnel.State = withContext(Dispatchers.IO) {
-        val configText = ensureExcludedApplication(profile.wireGuardConfigText)
+        val configText = TurnFreeWireGuardConfigPatcher.apply(profile, appContext.packageName)
         val config = Config.parse(
             ByteArrayInputStream(configText.toByteArray(StandardCharsets.UTF_8)),
         )
@@ -46,38 +46,6 @@ class TurnFreeWireGuardController(
 
     fun isRunning(): Boolean {
         return lastState == Tunnel.State.UP
-    }
-
-    private fun ensureExcludedApplication(configText: String): String {
-        val packageName = appContext.packageName
-        if (configText.contains("ExcludedApplications", ignoreCase = true) &&
-            configText.contains(packageName, ignoreCase = true)
-        ) {
-            return configText
-        }
-
-        val excludedLine = "ExcludedApplications = $packageName"
-        val lines = configText.lineSequence().toMutableList()
-        if (lines.isEmpty()) {
-            error("WireGuard-конфиг пустой")
-        }
-
-        val result = mutableListOf<String>()
-        var inserted = false
-
-        lines.forEach { line ->
-            if (!inserted && line.trim().equals("[Peer]", ignoreCase = true)) {
-                result += excludedLine
-                inserted = true
-            }
-            result += line
-        }
-
-        if (!inserted) {
-            result += excludedLine
-        }
-
-        return result.joinToString(separator = "\n").trim()
     }
 
     companion object {

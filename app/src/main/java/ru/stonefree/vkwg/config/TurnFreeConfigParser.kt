@@ -49,6 +49,7 @@ object TurnFreeConfigParser {
         val noDtls = optBooleanFromKeys(json, "no_dtls", "noDtls") ?: false
         val wireGuardConfigText = json.optString("wg").trim()
         val hasAmneziaWg = containsAmneziaWgDirectives(wireGuardConfigText)
+        val splitTunnelSettings = extractSplitTunnelSettings(wireGuardConfigText)
 
         if (turn.isBlank() && peer.isBlank() && wireGuardConfigText.isBlank()) {
             throw IllegalArgumentException("В JSON нет полей turn, peer или wg")
@@ -69,6 +70,8 @@ object TurnFreeConfigParser {
                 noDtls = noDtls,
                 hasAmneziaWg = hasAmneziaWg,
                 wireGuardConfigText = wireGuardConfigText,
+                splitTunnelMode = splitTunnelSettings.mode,
+                splitTunnelPackages = splitTunnelSettings.packages,
             ),
             format = format,
             wireGuardConfig = wireGuardConfig,
@@ -105,6 +108,8 @@ object TurnFreeConfigParser {
                 noDtls = extracted.noDtls,
                 hasAmneziaWg = extracted.hasAmneziaWg,
                 wireGuardConfigText = extracted.cleanedWireGuardText,
+                splitTunnelMode = extracted.splitTunnelMode,
+                splitTunnelPackages = extracted.splitTunnelPackages,
             ),
             format = TurnFreeImportFormat.WireGuardConf,
             wireGuardConfig = wireGuardConfig,
@@ -149,6 +154,9 @@ object TurnFreeConfigParser {
             }
         }
 
+        val cleanedWireGuardText = cleanedLines.joinToString(separator = "\n").trim()
+        val splitTunnelSettings = extractSplitTunnelSettings(cleanedWireGuardText)
+
         return ExtractedConf(
             name = collected["name"].orEmpty(),
             peer = collected["peer"].orEmpty(),
@@ -175,8 +183,10 @@ object TurnFreeConfigParser {
                 ?: collected["nodtls"]?.toBooleanLoose()
                 ?: collected["no-dtls"]?.toBooleanLoose()
                 ?: false,
-            hasAmneziaWg = containsAmneziaWgDirectives(cleanedLines.joinToString(separator = "\n")),
-            cleanedWireGuardText = cleanedLines.joinToString(separator = "\n").trim(),
+            hasAmneziaWg = containsAmneziaWgDirectives(cleanedWireGuardText),
+            cleanedWireGuardText = cleanedWireGuardText,
+            splitTunnelMode = splitTunnelSettings.mode,
+            splitTunnelPackages = splitTunnelSettings.packages,
         )
     }
 
@@ -323,6 +333,60 @@ object TurnFreeConfigParser {
         return text.ifBlank { null }
     }
 
+    private fun extractSplitTunnelSettings(configText: String): SplitTunnelSettings {
+        if (configText.isBlank()) {
+            return SplitTunnelSettings()
+        }
+
+        var insideInterface = false
+        var includedPackages: Set<String>? = null
+        var excludedPackages: Set<String>? = null
+
+        configText.lineSequence().forEach { rawLine ->
+            val trimmed = rawLine.trim()
+            if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
+                insideInterface = trimmed.equals("[Interface]", ignoreCase = true)
+                return@forEach
+            }
+            if (!insideInterface) {
+                return@forEach
+            }
+
+            val (key, value) = parseKeyValueLine(rawLine) ?: return@forEach
+            when (key.lowercase(Locale.US)) {
+                "includedapplications" -> includedPackages = parsePackageList(value)
+                "excludedapplications" -> excludedPackages = parsePackageList(value)
+            }
+        }
+
+        if (!includedPackages.isNullOrEmpty()) {
+            return SplitTunnelSettings(
+                mode = TurnFreeSplitTunnelMode.OnlySelected,
+                packages = includedPackages.orEmpty(),
+            )
+        }
+
+        val selectedExcludedPackages = excludedPackages
+            .orEmpty()
+            .filterNot { it == TURNFREE_PACKAGE_NAME }
+            .toSet()
+        if (selectedExcludedPackages.isNotEmpty()) {
+            return SplitTunnelSettings(
+                mode = TurnFreeSplitTunnelMode.ExcludeSelected,
+                packages = selectedExcludedPackages,
+            )
+        }
+
+        return SplitTunnelSettings()
+    }
+
+    private fun parsePackageList(value: String): Set<String> {
+        return value.split(',')
+            .map(String::trim)
+            .filter(String::isNotBlank)
+            .toSet()
+    }
+
     private data class ExtractedConf(
         val name: String,
         val peer: String,
@@ -335,5 +399,14 @@ object TurnFreeConfigParser {
         val noDtls: Boolean,
         val hasAmneziaWg: Boolean,
         val cleanedWireGuardText: String,
+        val splitTunnelMode: TurnFreeSplitTunnelMode,
+        val splitTunnelPackages: Set<String>,
     )
+
+    private data class SplitTunnelSettings(
+        val mode: TurnFreeSplitTunnelMode = TurnFreeSplitTunnelMode.Disabled,
+        val packages: Set<String> = emptySet(),
+    )
+
+    private const val TURNFREE_PACKAGE_NAME = "ru.stonefree.vkwg"
 }

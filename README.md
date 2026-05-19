@@ -1,56 +1,45 @@
 # TurnFree
 
-Android-приложение для запуска локального TURN/DTLS-клиента и последующего поднятия WireGuard-туннеля поверх него.
+TurnFree — Android-приложение для запуска локального TURN/DTLS-клиента и поднятия WireGuard-туннеля поверх него.
 
-## Возможности
+## Что умеет
 
-- Импорт конфигурации из файла или из буфера обмена.
-- Поддержка `turnbridge://`, raw Base64, JSON и WireGuard `.conf`.
-- Автоматический запуск TURN-сессии и WireGuard-туннеля.
-- Фоновая работа через `Foreground Service`.
-- Статус подключения и ошибки в интерфейсе и уведомлении.
-- Действия из уведомления: открыть приложение или остановить соединение.
-- Сохранение профиля и настроек между запусками.
+- Импорт конфигурации из файла или буфера обмена
+- Поддержка `turnbridge://`, Base64, JSON и WireGuard `.conf`
+- Автоматический запуск TURN-сессии и WireGuard-туннеля
+- Подробный прогресс подключения с живыми этапами
+- Обработка VK-капчи: авто-попытка, ручной fallback и понятные ошибки
+- Работа с несколькими транспортными потоками
+- Раздельное туннелирование:
+  - исключить выбранные приложения
+  - или туннелировать только выбранные
+- Фоновая работа через foreground service
+- Сохранение профиля и настроек между запусками
+
+## Что нового в 1.1.0
+
+- Улучшено решение капчи: корректный переход к ручной капче, добавлена настройка `Всегда ручная капча`, улучшена обработка неудачных попыток
+- Переработан прогресс подключения: больше этапов, более живой прогресс-бар, корректный учёт нескольких потоков
+- Добавлено раздельное туннелирование с выбором приложений, поиском и иконками
+
+## Поддерживаемые конфиги
+
+- `turnbridge://<base64>`
+- Base64-строка
+- JSON-конфиг
+- WireGuard `.conf`
 
 ## Совместимость
 
-Приложение поддерживает импорт конфигов, экспортированных из `turnbridge`:
-
-- https://github.com/nullcstring/turnbridge
+- Android 7.0+
+- Архитектура `arm64-v8a`
 
 ## Основано на
 
 - `vk-turn-proxy`: https://github.com/cacggghp/vk-turn-proxy
-- `WireGuard` Android tunnel library: https://github.com/WireGuard/wireguard-android
+- `WireGuard Android tunnel library`: https://github.com/WireGuard/wireguard-android
+- `turnbridge`: https://github.com/nullcstring/turnbridge
 
-## Требования
+## Релизы
 
-- Android 24+
-- `arm64-v8a`
-
-## Сборка
-
-Debug:
-
-```bash
-GRADLE_USER_HOME=/tmp/gradle-home ./gradlew :app:assembleDebug
-```
-
-Release:
-
-```bash
-GRADLE_USER_HOME=/tmp/gradle-home ./gradlew :app:assembleRelease
-```
-
-Релизный APK будет собран в:
-
-- `app/build/outputs/apk/release/app-release.apk`
-
-## Формат конфигов
-
-Поддерживаются:
-
-- `turnbridge://<base64>`
-- raw Base64
-- JSON
-- WireGuard `.conf`
+Готовые APK публикуются в разделе GitHub Releases.
